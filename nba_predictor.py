@@ -256,8 +256,32 @@ def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
 
 
 if __name__ == "__main__":
-    result = predict_against_opponent("James Harden", "Boston Celtics")
-    print("\n--- Custom Matchup Prediction ---")
-    print(result)
+    player_name = "James Harden"
+
+    schedule = fetch_schedule()
+    team_id = get_player_team(player_name)
+    next_game_info = find_next_game(schedule, team_id)
+
+    if next_game_info:
+        print(f"\nNext game for {player_name}: {next_game_info['game_date']} vs {next_game_info['opponent_team_name']}")
+
+        df = get_all_game_logs(player_name)
+        df_clean = clean_features(df)
+
+        model, _, _, _ = train_eval(df_clean)
+
+        team_stats_df = load_team_defense_data()
+
+        prediction = predict_against_opponent(
+            player_name,
+            next_game_info['opponent_team_name']
+        )
+
+        print("\n--- Next Game Prediction ---")
+        print(prediction)
+
+    else:
+        print("No upcoming games found.")
+
 
 
