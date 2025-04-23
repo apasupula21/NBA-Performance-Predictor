@@ -1,5 +1,6 @@
-from nba_api.stats.endpoints import playergamelog, commonplayerinfo
-from nba_api.stats.static import players
+from nba_api.stats.endpoints import playergamelog, commonplayerinfo, commonteamroster
+from nba_api.stats.endpoints import boxscoretraditionalv2
+from nba_api.stats.static import players, teams
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
@@ -8,16 +9,119 @@ from sklearn.metrics import mean_absolute_error, r2_score
 import os
 import requests
 import datetime
+import json
+import time
+    
+CACHE_FILE = "team_roster_cache.json"
+CACHE_DURATION = 60 * 60 * 24
+
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Referer': 'https://www.nba.com/',
+    'x-nba-stats-origin': 'stats',
+    'x-nba-stats-token': 'true',
+})
+
+TEAM_ABBREV_TO_ID = {
+    'ATL': 1610612737, 'BOS': 1610612738, 'BKN': 1610612751,
+    'CHA': 1610612766, 'CHI': 1610612741, 'CLE': 1610612739,
+    'DAL': 1610612742, 'DEN': 1610612743, 'DET': 1610612765,
+    'GSW': 1610612744, 'HOU': 1610612745, 'IND': 1610612754,
+    'LAC': 1610612746, 'LAL': 1610612747, 'MEM': 1610612763,
+    'MIA': 1610612748, 'MIL': 1610612749, 'MIN': 1610612750,
+    'NOP': 1610612740, 'NYK': 1610612752, 'OKC': 1610612760,
+    'ORL': 1610612753, 'PHI': 1610612755, 'PHX': 1610612756,
+    'POR': 1610612757, 'SAC': 1610612758, 'SAS': 1610612759,
+    'TOR': 1610612761, 'UTA': 1610612762, 'WAS': 1610612764
+}
+
+TEAM_ABBREV_TO_FULL = {
+    'ATL': 'Atlanta Hawks', 'BOS': 'Boston Celtics', 'BKN': 'Brooklyn Nets',
+    'CHA': 'Charlotte Hornets', 'CHI': 'Chicago Bulls', 'CLE': 'Cleveland Cavaliers',
+    'DAL': 'Dallas Mavericks', 'DEN': 'Denver Nuggets', 'DET': 'Detroit Pistons',
+    'GSW': 'Golden State Warriors', 'HOU': 'Houston Rockets', 'IND': 'Indiana Pacers',
+    'LAC': 'Los Angeles Clippers', 'LAL': 'Los Angeles Lakers', 'MEM': 'Memphis Grizzlies',
+    'MIA': 'Miami Heat', 'MIL': 'Milwaukee Bucks', 'MIN': 'Minnesota Timberwolves',
+    'NOP': 'New Orleans Pelicans', 'NYK': 'New York Knicks', 'OKC': 'Oklahoma City Thunder',
+    'ORL': 'Orlando Magic', 'PHI': 'Philadelphia 76ers', 'PHX': 'Phoenix Suns',
+    'POR': 'Portland', 'SAC': 'Sacramento Kings', 'SAS': 'San Antonio Spurs',
+    'TOR': 'Toronto Raptors', 'UTA': 'Utah Jazz', 'WAS': 'Washington Wizards'
+}
+    
+API_KEY = "dd7jmZQzRLLrBl9dX7FzTYgRkR3uDEvzffH7btqW"
+url = f"https://api.sportradar.us/nba/trial/v8/en/league/injuries.json?api_key={API_KEY}"
+
+response = session.get(url, timeout=10)
+print("Status:", response.status_code)
+
+if response.status_code == 200:
+    data = response.json()
+else:
+    print("Error:", response.text)
 
 def get_player_id(name):
     player_dict = players.find_players_by_full_name(name)
     return player_dict[0]['id'] if player_dict else None
 
+def update_team_roster_cache():
+    print("Updating team roster cache...")
+    rosters = {}
+    failed_teams = []
+
+    for team in teams.get_teams():
+        team_id = team['id']
+        team_name = team['full_name']
+        try:
+            print(f"Fetching roster for {team_name}...")
+            roster_data = commonteamroster.CommonTeamRoster(team_id=team_id).get_data_frames()[0]
+            for player in roster_data['PLAYER']:
+                rosters[player] = team_id
+        except Exception as e:
+            print(f"Failed to fetch roster for {team_name}: {e}")
+            failed_teams.append(team)
+
+        time.sleep(1.5)  # 🧘 slow down to avoid getting blocked
+
+    # Retry once for the teams that failed
+    if failed_teams:
+        print("\nRetrying failed teams...\n")
+        for team in failed_teams:
+            team_id = team['id']
+            team_name = team['full_name']
+            try:
+                print(f"Retrying {team_name}...")
+                roster_data = commonteamroster.CommonTeamRoster(team_id=team_id).get_data_frames()[0]
+                for player in roster_data['PLAYER']:
+                    rosters[player] = team_id
+            except Exception as e:
+                print(f"Still failed for {team_name}: {e}")
+            time.sleep(1.5)
+
+    with open(CACHE_FILE, "w") as f:
+        json.dump({
+            "timestamp": time.time(),
+            "rosters": rosters
+        }, f)
+
+    print("\nRoster cache update complete.")
+
+def load_team_roster_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            data = json.load(f)
+            if time.time() - data["timestamp"] < CACHE_DURATION:
+                return data["rosters"]
+    update_team_roster_cache()
+    return load_team_roster_cache()
 
 def get_player_team(player_name):
-    player_id = get_player_id(player_name)
-    info = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
-    return info.get_data_frames()[0]['TEAM_ID'][0]
+    rosters = load_team_roster_cache()
+    if player_name in rosters:
+        return rosters[player_name]
+    else:
+        raise ValueError(f"Team ID not found for player: {player_name}")
 
 
 def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25'):
@@ -33,8 +137,11 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
                 season_type_all_star='Regular Season'
             )
             df = gamelog.get_data_frames()[0]
-            df['SEASON'] = season
-            all_logs.append(df)
+            if not df.empty and 'MATCHUP' in df.columns:
+                df['SEASON'] = season
+                all_logs.append(df)
+            else:
+                print(f"Skipping season {season}: no MATCHUP column or empty log.")
         except Exception as e:
             print(f"Failed for {season}: {e}")
     return pd.concat(all_logs, ignore_index=True) if all_logs else pd.DataFrame()
@@ -62,6 +169,85 @@ def load_team_defense_data(stats_folder='team_stats'):
     all_stats['TEAM'] = all_stats['TEAM'].str.replace('Portland Trail Blazers', 'Portland')
     return all_stats
 
+def structure_injuries(raw_data):
+    structured = {}
+
+    if "teams" not in raw_data:
+        raise ValueError("Invalid data format: 'teams' key not found.")
+
+    for team_entry in raw_data["teams"]:
+        team_name = f"{team_entry['market']} {team_entry['name']}"
+        structured[team_name] = {}
+
+        for player in team_entry.get("players", []):
+            if "injuries" in player and player["injuries"]:
+                latest_injury = player["injuries"][-1]
+                status = latest_injury.get("status", "Unknown")
+                structured[team_name][player["full_name"]] = status
+
+    return structured
+
+def get_teammate_injuries(player_name, structured_data):
+    found_team = None
+    for team_name, players_status in structured_data.items():
+        if player_name in players_status:
+            found_team = team_name
+            break
+
+    if not found_team:
+        for team_name, players_status in structured_data.items():
+            if player_name not in players_status:
+                found_team = team_name
+                break
+
+    if not found_team:
+        print(f"Warning: Could not find {player_name} in injury data. Skipping injury teammate extraction.")
+        return [], []
+
+    out_statuses = {"Out", "Out For Season"}
+    d2d_statuses = {"Day To Day", "Questionable", "Doubtful", "Probable"}
+
+    out_players = []
+    d2d_players = []
+
+    for teammate, status in structured_data[found_team].items():
+        if teammate == player_name:
+            continue
+        if status in out_statuses:
+            out_players.append(teammate)
+        elif status in d2d_statuses:
+            d2d_players.append(teammate)
+
+    return out_players, d2d_players
+
+def print_cached_rosters():
+    if not os.path.exists(CACHE_FILE):
+        print("No cache file found.")
+        return
+
+    with open(CACHE_FILE, "r") as f:
+        data = json.load(f)
+
+    rosters = data.get("rosters", {})
+    print("\n--- Cached Rosters ---")
+    for player, team_id in sorted(rosters.items()):
+        print(f"{player}: {team_id}")
+            
+def get_player_game_dates(player_name, season='2023-24'):
+    player_id = get_player_id(player_name)
+    logs = playergamelog.PlayerGameLog(player_id=player_id, season=season).get_data_frames()[0]
+    logs['GAME_DATE'] = pd.to_datetime(logs['GAME_DATE'])
+    return set(logs['GAME_DATE'])
+
+def build_availability_table(target_player, teammates, season='2023-24'):
+    target_dates = get_player_game_dates(target_player, season)
+    table = pd.DataFrame({'GAME_DATE': sorted(target_dates)})
+
+    for teammate in teammates:
+        teammate_dates = get_player_game_dates(teammate, season)
+        table[teammate] = table['GAME_DATE'].apply(lambda d: 1 if d in teammate_dates else 0)
+
+    return table
 
 def clean_features(df):
     df = df.sort_values('GAME_DATE')
@@ -138,6 +324,7 @@ def train_eval(df):
     for i, stat in enumerate(targets):
         print(f"{stat}: MAE = {mae[i]:.2f}, R² = {r2[i]:.2f}")
 
+    model.feature_names_in_ = x.columns.tolist()
     return model, x_test, y_test, y_pred
 
 def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
@@ -157,24 +344,13 @@ def predict_against_opponent(player_name, opponent_name, df_clean, model, team_s
     def_rtg = get_team_def_rtg_by_name(opponent_name, season, team_stats_df)
     if def_rtg is None:
         raise ValueError(f"No DEF_RTG found for {opponent_name} in {season}")
-    input_features = pd.DataFrame([{
-        'PTS_avg3': latest['PTS_avg3'],
-        'PTS_season_avg': latest['PTS_season_avg'],
-        'PTS_vs_opp_avg': latest['PTS_vs_opp_avg'],
-        
-        'REB_avg3': latest['REB_avg3'],
-        'REB_season_avg': latest['REB_season_avg'],
-        'REB_vs_opp_avg': latest['REB_vs_opp_avg'],
-        
-        'AST_avg3': latest['AST_avg3'],
-        'AST_season_avg': latest['AST_season_avg'],
-        'AST_vs_opp_avg': latest['AST_vs_opp_avg'],
-        
-        'PLUSMINUS_avg3': latest['PLUSMINUS_avg3'],
-        'DEF_RTG': def_rtg
-    }])
 
+    input_features_dict = {name: latest[name] for name in model.feature_names_in_ if name != 'DEF_RTG'}
+    input_features_dict['DEF_RTG'] = def_rtg
+
+    input_features = pd.DataFrame([input_features_dict])
     prediction = model.predict(input_features)[0]
+
     return {
         'Player': player_name,
         'Opponent': opponent_name,
@@ -182,6 +358,34 @@ def predict_against_opponent(player_name, opponent_name, df_clean, model, team_s
         'Predicted REB': round(float(prediction[1]), 1),
         'Predicted AST': round(float(prediction[2]), 1)
     }
+
+def filter_games_without_all_teammates(df, absent_teammates, season='2024-25'):
+    print(f"Filtering games where all of {absent_teammates} were absent...")
+
+    teammate_absent_sets = []
+
+    for teammate in absent_teammates:
+        try:
+            teammate_id = get_player_id(teammate)
+            logs = playergamelog.PlayerGameLog(player_id=teammate_id, season=season).get_data_frames()[0]
+            logs['GAME_DATE'] = pd.to_datetime(logs['GAME_DATE'])
+            teammate_dates = set(logs['GAME_DATE'])
+            all_game_dates = pd.to_datetime(df['GAME_DATE'])
+            absent_dates = set(all_game_dates) - teammate_dates
+            teammate_absent_sets.append(absent_dates)
+        except Exception as e:
+            print(f"Failed to fetch game log for teammate {teammate}: {e}")
+            return df
+
+    if teammate_absent_sets:
+        common_absent_dates = set.intersection(*teammate_absent_sets)
+        df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'], errors='coerce')
+        filtered_df = df[df['GAME_DATE'].isin(common_absent_dates)]
+        print(f"Filtered down to {len(filtered_df)} games where all teammates were out.")
+        return filtered_df
+    else:
+        return df
+
 
 def fetch_schedule():
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
@@ -196,8 +400,8 @@ def find_next_game(schedule, team_id):
         game_day = datetime.datetime.strptime(game_date['gameDate'], '%m/%d/%Y %H:%M:%S').date()
         if game_day >= today:
             for game in game_date['games']:
-                if game['homeTeam']['teamId'] == team_id or game['awayTeam']['teamId'] == team_id:
-                    opponent = game['awayTeam'] if game['homeTeam']['teamId'] == team_id else game['homeTeam']
+                if str(game['homeTeam']['teamId']) == str(team_id) or str(game['awayTeam']['teamId']) == str(team_id):
+                    opponent = game['awayTeam'] if str(game['homeTeam']['teamId']) == str(team_id) else game['homeTeam']
                     return {
                         'game_date': game_day,
                         'opponent_team_id': opponent['teamId'],
@@ -205,18 +409,97 @@ def find_next_game(schedule, team_id):
                     }
     return None
 
+def get_team_abbrev_from_logs_or_cache(player_id):
+    try:
+        gamelog_df = playergamelog.PlayerGameLog(player_id=player_id, season='2023-24').get_data_frames()[0]
+        if 'MATCHUP' in gamelog_df.columns and not gamelog_df.empty:
+            first_matchup = gamelog_df.iloc[0]['MATCHUP']
+            team_abbrev = first_matchup.split(' ')[0]
+            return team_abbrev
+    except Exception as e:
+        print(f"Failed to get team abbreviation from logs: {e}")
+
+    rosters = load_team_roster_cache()
+    player_name = None
+
+    for p in players.get_active_players():
+        if p["id"] == player_id:
+            player_name = p["full_name"]
+            break
+
+    if player_name and player_name in rosters:
+        team_id = rosters[player_name]
+        for abbrev, tid in TEAM_ABBREV_TO_ID.items():
+            if str(tid) == str(team_id):
+                return abbrev
+
+    raise ValueError(f"Could not find team abbreviation for player ID {player_id}.")
+
+
+def get_out_teammates(player_name, structured_data):
+    player_id = get_player_id(player_name)
+    
+    try:
+        team_abbrev = get_team_abbrev_from_logs_or_cache(player_id)
+    except Exception as e:
+        raise ValueError(f"Failed to get team abbreviation: {e}")
+
+    full_team_name = TEAM_ABBREV_TO_FULL.get(team_abbrev)
+    if not full_team_name:
+        raise ValueError(f"Could not find full team name for {team_abbrev} in TEAM_ABBREV_TO_FULL.")
+
+    out_statuses = {"Out", "Out For Season"}
+    out_teammates = []
+
+    if full_team_name not in structured_data:
+        print(f"Warning: {full_team_name} not found in injury data structure.")
+        return []
+
+    for teammate, status in structured_data[full_team_name].items():
+        if teammate != player_name and status in out_statuses:
+            out_teammates.append(teammate)
+
+    return out_teammates
+
+
 if __name__ == "__main__":
-    player_name = "Stephen Curry"
+    player_name = "Tyler Herro"
 
     df = get_all_game_logs(player_name)
-    df_clean = clean_features(df)
+
+    if 'MATCHUP' not in df.columns:
+        print("MATCHUP column missing — retrying game log fetch.")
+        df = get_all_game_logs(player_name)
+        if 'MATCHUP' not in df.columns:
+            print(df.head())
+            raise ValueError("MATCHUP column still missing after retry. Check API limits or connection.")
+
+    structured_injuries = structure_injuries(data)
+    print("Available teams in injury data:", list(structured_injuries.keys()))
+
+    out_teammates = get_out_teammates(player_name, structured_injuries)
+
+    df_filtered = df
+    df_filtered = filter_games_without_all_teammates(df_filtered, out_teammates)
+
+    try:
+        team_id = get_player_team(player_name)
+    except ValueError as e:
+        print(f"Could not get team ID for {player_name} from cache: {e}")
+        player_id = get_player_id(player_name)
+        team_abbrev = get_team_abbrev_from_logs_or_cache(player_id)
+        team_id = TEAM_ABBREV_TO_ID.get(team_abbrev)
+        if not team_id:
+            raise ValueError(f"Team ID could not be resolved for {team_abbrev}")
+
+    df_clean = clean_features(df_filtered)
     if df_clean.empty:
         raise ValueError("No clean data available for training.")
+
     team_stats_df = load_team_defense_data()
     model, _, _, _ = train_eval(df_clean)
 
     schedule = fetch_schedule()
-    team_id = get_player_team(player_name)
     next_game_info = find_next_game(schedule, team_id)
 
     if next_game_info:
@@ -232,3 +515,4 @@ if __name__ == "__main__":
         print(prediction)
     else:
         print("No upcoming games found.")
+
