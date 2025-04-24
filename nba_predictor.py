@@ -129,21 +129,45 @@ def get_player_team(player_name):
 def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25'):
     player_id = get_player_id(player_name)
     all_logs = []
-    for year in range(int(start_season[:4]), int(end_season[:4]) + 1):
-        season = f"{year}-{str(year + 1)[-2:]}"
+    
+    # First try to get current season data with retries
+    max_retries = 3
+    current_season = '2024-25'
+    
+    for attempt in range(max_retries):
         try:
             gamelog = playergamelog.PlayerGameLog(
                 player_id=player_id,
-                season=season,
-                season_type_all_star='Regular Season'
+                season=current_season,
+                season_type_all_star='Regular Season',
+                timeout=30
             )
             df = gamelog.get_data_frames()[0]
             if not df.empty and 'MATCHUP' in df.columns:
-                df['SEASON'] = season
+                df['SEASON'] = current_season
                 all_logs.append(df)
+                print(f"Successfully fetched {len(df)} games for {current_season}")
+                break
         except Exception as e:
-            print(f"Failed for {season}: {e}")
-    return pd.concat(all_logs, ignore_index=True) if all_logs else pd.DataFrame()
+            print(f"Attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait before retrying
+            else:
+                print(f"Failed to fetch current season data after {max_retries} attempts")
+    
+    # Combine all logs and sort by date
+    if all_logs:
+        combined_df = pd.concat(all_logs, ignore_index=True)
+        combined_df['GAME_DATE'] = pd.to_datetime(combined_df['GAME_DATE'])
+        combined_df = combined_df.sort_values('GAME_DATE')
+        
+        # Print debug info
+        print(f"\nTotal games fetched: {len(combined_df)}")
+        print(f"Date range: {combined_df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {combined_df['GAME_DATE'].max().strftime('%Y-%m-%d')}")
+        
+        return combined_df
+    else:
+        return pd.DataFrame()
 
 def load_team_defense_data(stats_folder='team_stats'):
     if not os.path.exists(stats_folder):
@@ -309,7 +333,9 @@ def clean_features(df):
     print("\nAfter numeric conversion:")
     print(df[['FGM', 'FGA']].head())
     
-    df.dropna(inplace=True)
+    # Only drop rows where all key stats are missing
+    df = df.dropna(subset=['PTS', 'REB', 'AST', 'MIN'], how='all')
+    print(f"\nGames after initial cleaning: {len(df)}")
 
     # Rolling averages with different windows - keep as raw numbers
     for window in [3, 5, 10]:
@@ -382,14 +408,22 @@ def clean_features(df):
         print(f"{stat}_vs_opp_avg: {df[f'{stat}_vs_opp_avg'].mean():.1f}")
         print()
 
-    # Drop rows with missing values
-    df.dropna(inplace=True)
+    # Only drop rows where all features are missing
+    df = df.dropna(subset=['PTS_avg3', 'PTS_avg5', 'PTS_avg10', 'FG_PCT'], how='all')
+    print(f"\nFinal number of games after cleaning: {len(df)}")
 
     return df
 
 def train_eval(df):
+    if df.empty or len(df) < 5:  # Check if we have enough data
+        print("Insufficient data for training. Need at least 5 games.")
+        return None, None, None, None
+        
     current_season = df['SEASON'].iloc[-1]
     current_season_data = df[df['SEASON'] == current_season]
+    
+    print(f"\nTotal games available: {len(df)}")
+    print(f"Current season games: {len(current_season_data)}")
     
     last_20_games = df.tail(20)
     last_10_games = df.tail(10)
@@ -423,70 +457,84 @@ def train_eval(df):
     features = ['PTS_avg3', 'PTS_avg5', 'PTS_avg10', 'FG_PCT']
     targets = ['PTS', 'REB', 'AST']
     
-    df['PTS_avg3'] = df['PTS'].rolling(3).mean()
-    df['PTS_avg5'] = df['PTS'].rolling(5).mean()
-    df['PTS_avg10'] = df['PTS'].rolling(10).mean()
-    df['FG_PCT'] = df['FGM'] / df['FGA'] * 100
-    
-    df = df.dropna()
-    
-    x = df[features]
-    y = df[targets]
-    
-    train_size = len(df) - 20  # Use last 20 games for testing
-    x_train = x[:train_size]
-    x_test = x[train_size:]
-    y_train = y[:train_size]
-    y_test = y[train_size:]
-    
-    models = {}
-    predictions = {}
-    metrics = {}
-    
-    for target in targets:
-        model = RandomForestRegressor(
+    # Only proceed with model training if we have enough data
+    if len(df) >= 10:  # Reduced minimum games requirement
+        df['PTS_avg3'] = df['PTS'].rolling(3).mean()
+        df['PTS_avg5'] = df['PTS'].rolling(5).mean()
+        df['PTS_avg10'] = df['PTS'].rolling(10).mean()
+        df['FG_PCT'] = df['FGM'] / df['FGA'] * 100
+        
+        # Only drop rows where all features are missing
+        df = df.dropna(subset=features, how='all')
+        print(f"\nGames after feature cleaning: {len(df)}")
+        
+        if len(df) < 10:  # Check again after dropping NaN values
+            print("Not enough data after cleaning for model training")
+            return None, None, None, None
+            
+        x = df[features]
+        y = df[targets]
+        
+        # Use a smaller test set if we don't have enough data
+        test_size = min(10, len(df) // 3)  # Use at most 10 games for testing
+        train_size = len(df) - test_size
+        
+        x_train = x[:train_size]
+        x_test = x[train_size:]
+        y_train = y[:train_size]
+        y_test = y[train_size:]
+        
+        models = {}
+        predictions = {}
+        metrics = {}
+        
+        for target in targets:
+            model = RandomForestRegressor(
+                n_estimators=100,
+                max_depth=None,
+                min_samples_split=2,
+                min_samples_leaf=1,
+                random_state=42
+            )
+            
+            model.fit(x_train, y_train[target])
+            y_pred = model.predict(x_test)
+            
+            # Adjust predictions based on recent performance
+            recent_avg = last_10_games[target].mean()
+            pred_avg = np.mean(y_pred)
+            adjustment = recent_avg / pred_avg if pred_avg > 0 else 1
+            y_pred = y_pred * adjustment
+            
+            models[target] = model
+            predictions[target] = y_pred
+            metrics[target] = {
+                'mae': mean_absolute_error(y_test[target], y_pred),
+                'r2': r2_score(y_test[target], y_pred)
+            }
+        
+        print("\n--- Model Evaluation ---")
+        for target in targets:
+            print(f"\n{target}:")
+            print(f"MAE = {metrics[target]['mae']:.2f}")
+            print(f"R² = {metrics[target]['r2']:.2f}")
+            print(f"Predicted range: {predictions[target].min():.1f} to {predictions[target].max():.1f}")
+            print(f"Actual range: {y_test[target].min():.1f} to {y_test[target].max():.1f}")
+        
+        combined_model = MultiOutputRegressor(RandomForestRegressor(
             n_estimators=100,
             max_depth=None,
             min_samples_split=2,
             min_samples_leaf=1,
             random_state=42
-        )
+        ))
+        combined_model.estimators_ = [models[target] for target in targets]
+        combined_model.feature_names_in_ = features
         
-        model.fit(x_train, y_train[target])
-        y_pred = model.predict(x_test)
-        
-        # Adjust predictions based on recent performance
-        recent_avg = last_10_games[target].mean()
-        pred_avg = np.mean(y_pred)
-        adjustment = recent_avg / pred_avg if pred_avg > 0 else 1
-        y_pred = y_pred * adjustment
-        
-        models[target] = model
-        predictions[target] = y_pred
-        metrics[target] = {
-            'mae': mean_absolute_error(y_test[target], y_pred),
-            'r2': r2_score(y_test[target], y_pred)
-        }
-    
-    print("\n--- Model Evaluation ---")
-    for target in targets:
-        print(f"\n{target}:")
-        print(f"MAE = {metrics[target]['mae']:.2f}")
-        print(f"R² = {metrics[target]['r2']:.2f}")
-        print(f"Predicted range: {predictions[target].min():.1f} to {predictions[target].max():.1f}")
-        print(f"Actual range: {y_test[target].min():.1f} to {y_test[target].max():.1f}")
-    
-    combined_model = MultiOutputRegressor(RandomForestRegressor(
-        n_estimators=100,
-        max_depth=None,
-        min_samples_split=2,
-        min_samples_leaf=1,
-        random_state=42
-    ))
-    combined_model.estimators_ = [models[target] for target in targets]
-    combined_model.feature_names_in_ = features
-    
-    return combined_model, x_test, y_test, np.column_stack([predictions[target] for target in targets])
+        return combined_model, x_test, y_test, np.column_stack([predictions[target] for target in targets])
+    else:
+        print("Not enough data for model training")
+        return None, None, None, None
 
 def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
     match = team_stats_df[
