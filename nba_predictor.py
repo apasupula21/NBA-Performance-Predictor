@@ -2,6 +2,7 @@ from nba_api.stats.endpoints import playergamelog, commonplayerinfo, commonteamr
 from nba_api.stats.endpoints import boxscoretraditionalv2
 from nba_api.stats.static import players, teams
 import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
@@ -53,13 +54,14 @@ TEAM_ABBREV_TO_FULL = {
 API_KEY = "dd7jmZQzRLLrBl9dX7FzTYgRkR3uDEvzffH7btqW"
 url = f"https://api.sportradar.us/nba/trial/v8/en/league/injuries.json?api_key={API_KEY}"
 
-response = session.get(url, timeout=10)
-print("Status:", response.status_code)
-
-if response.status_code == 200:
+try:
+    response = session.get(url, timeout=10)
+    response.raise_for_status()  # Raise an exception for bad status codes
     data = response.json()
-else:
-    print("Error:", response.text)
+    print("Successfully fetched injury data")
+except requests.exceptions.RequestException as e:
+    print(f"Error fetching injury data: {e}")
+    data = {"teams": []}  # Initialize with empty data structure
 
 def get_player_id(name):
     player_dict = players.find_players_by_full_name(name)
@@ -147,26 +149,68 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
     return pd.concat(all_logs, ignore_index=True) if all_logs else pd.DataFrame()
 
 def load_team_defense_data(stats_folder='team_stats'):
+    if not os.path.exists(stats_folder):
+        print(f"Creating {stats_folder} directory...")
+        os.makedirs(stats_folder)
+        print(f"Please add team statistics Excel files to the {stats_folder} directory")
+        return pd.DataFrame(columns=['TEAM', 'DEF_RTG', 'SEASON', 'PACE', 'OFF_RTG', 'EFG_PCT', 'TOV_PCT', 'OREB_PCT', 'FT_RATE'])
+
     all_seasons = []
     for file in os.listdir(stats_folder):
-        if file.endswith('.csv'):
-            season = file.split('_')[-1].split('.')[0]
-            df = pd.read_csv(os.path.join(stats_folder, file))
-            df = df[pd.to_numeric(df['Rk'], errors='coerce').notna()]
-            df['Team'] = df['Team'].replace({
-                'Charlotte Bobcats': 'Charlotte Hornets',
-                'New Jersey Nets': 'Brooklyn Nets',
-                'Seattle SuperSonics': 'Oklahoma City Thunder'
-            })
-            drtg_col = next((col for col in df.columns if 'Rtg' in col and 'D' in col), None)
-            df['SEASON'] = f"{int(season)-1}-{season[-2:]}"
-            df = df[['Team', drtg_col, 'SEASON']]
-            df.rename(columns={'Team': 'TEAM', drtg_col: 'DEF_RTG'}, inplace=True)
-            all_seasons.append(df)
+        if file.endswith(('.xlsx', '.csv')):
+            try:
+                season = file.split('_')[-1].split('.')[0]
+                if file.endswith('.xlsx'):
+                    df = pd.read_excel(os.path.join(stats_folder, file))
+                else:
+                    df = pd.read_csv(os.path.join(stats_folder, file))
+                
+                # Clean up the data
+                df = df[df['Rk'].notna()]  # Keep only rows with valid Rk
+                df['Team'] = df['Team'].replace({
+                    'LA Clippers': 'Los Angeles Clippers',
+                    'Portland Trl': 'Portland Trail Blazers',
+                    'Brooklyn': 'Brooklyn Nets',
+                    'Golden State': 'Golden State Warriors',
+                    'LA Lakers': 'Los Angeles Lakers'
+                })
+
+                # Create a new dataframe with only the columns we need
+                new_df = pd.DataFrame()
+                new_df['TEAM'] = df['Team']
+                new_df['DEF_RTG'] = df['DRtg']
+                new_df['OFF_RTG'] = df['ORtg']
+                new_df['PACE'] = df['Pace']
+                new_df['EFG_PCT'] = df['eFG%']
+                # Convert percentages from decimal to percentage format if needed
+                new_df['TOV_PCT'] = df['TOV%'].apply(lambda x: x if x <= 100 else x/100)
+                new_df['OREB_PCT'] = df['ORB%'].apply(lambda x: x if x <= 100 else x/100)
+                new_df['FT_RATE'] = df['FT/FGA']
+                new_df['SEASON'] = f"{int(season)-1}-{season[-2:]}"
+
+                # Verify percentage ranges
+                for col in ['TOV_PCT', 'OREB_PCT']:
+                    if new_df[col].max() > 100 or new_df[col].min() < 0:
+                        print(f"Warning: {col} has values outside 0-100 range: {new_df[col].min():.1f} to {new_df[col].max():.1f}")
+
+                all_seasons.append(new_df)
+                print(f"Successfully processed {file}")
+            except Exception as e:
+                print(f"Error processing {file}: {e}")
+                continue
+
+    if not all_seasons:
+        print(f"No valid team statistics found in {stats_folder}")
+        return pd.DataFrame(columns=['TEAM', 'DEF_RTG', 'SEASON', 'PACE', 'OFF_RTG', 'EFG_PCT', 'TOV_PCT', 'OREB_PCT', 'FT_RATE'])
+
     all_stats = pd.concat(all_seasons, ignore_index=True)
-    all_stats['TEAM'] = all_stats['TEAM'].str.replace(r'\*', '', regex=True)
-    all_stats['TEAM'] = all_stats['TEAM'].str.replace('LA Clippers', 'Los Angeles Clippers')
-    all_stats['TEAM'] = all_stats['TEAM'].str.replace('Portland Trail Blazers', 'Portland')
+    
+    # Fill missing values with season averages
+    for col in all_stats.columns:
+        if col not in ['TEAM', 'SEASON']:
+            season_means = all_stats.groupby('SEASON')[col].transform('mean')
+            all_stats[col] = all_stats[col].fillna(season_means)
+    
     return all_stats
 
 def structure_injuries(raw_data):
@@ -250,24 +294,55 @@ def build_availability_table(target_player, teammates, season='2023-24'):
     return table
 
 def clean_features(df):
+    # Print initial data sample
+    print("\nInitial data sample:")
+    print(df[['FGM', 'FGA']].head())
+    
     df = df.sort_values('GAME_DATE')
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
 
+    # Basic stats - keep as raw numbers, don't convert to percentages
     df = df[['SEASON', 'GAME_DATE', 'MATCHUP', 'PTS', 'REB', 'AST', 'PLUS_MINUS', 'FGA', 'FGM', 'MIN']]
     df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
+    
+    # Convert FGM and FGA to numeric if they aren't already
+    df['FGM'] = pd.to_numeric(df['FGM'], errors='coerce')
+    df['FGA'] = pd.to_numeric(df['FGA'], errors='coerce')
+    
+    print("\nAfter numeric conversion:")
+    print(df[['FGM', 'FGA']].head())
+    
     df.dropna(inplace=True)
 
-    df['PTS_avg3'] = df['PTS'].rolling(3).mean().shift(1)
-    df['REB_avg3'] = df['REB'].rolling(3).mean().shift(1)
-    df['AST_avg3'] = df['AST'].rolling(3).mean().shift(1)
-    df['PLUSMINUS_avg3'] = df['PLUS_MINUS'].rolling(3).mean().shift(1)
+    # Rolling averages with different windows - keep as raw numbers
+    for window in [3, 5, 10]:
+        df[f'PTS_avg{window}'] = df['PTS'].rolling(window).mean().shift(1)
+        df[f'REB_avg{window}'] = df['REB'].rolling(window).mean().shift(1)
+        df[f'AST_avg{window}'] = df['AST'].rolling(window).mean().shift(1)
+        df[f'PLUSMINUS_avg{window}'] = df['PLUS_MINUS'].rolling(window).mean().shift(1)
+        df[f'FGM_avg{window}'] = df['FGM'].rolling(window).mean().shift(1)
+        df[f'FGA_avg{window}'] = df['FGA'].rolling(window).mean().shift(1)
 
-    df['PTS_season_avg'] = df['PTS'].expanding().mean().shift(1)
-    df['REB_season_avg'] = df['REB'].expanding().mean().shift(1)
-    df['AST_season_avg'] = df['AST'].expanding().mean().shift(1)
+    # Season averages - keep as raw numbers
+    df['PTS_season_avg'] = df.groupby('SEASON')['PTS'].expanding().mean().reset_index(0, drop=True)
+    df['REB_season_avg'] = df.groupby('SEASON')['REB'].expanding().mean().reset_index(0, drop=True)
+    df['AST_season_avg'] = df.groupby('SEASON')['AST'].expanding().mean().reset_index(0, drop=True)
+    df['FGM_season_avg'] = df.groupby('SEASON')['FGM'].expanding().mean().reset_index(0, drop=True)
+    df['FGA_season_avg'] = df.groupby('SEASON')['FGA'].expanding().mean().reset_index(0, drop=True)
 
+    # Only calculate percentages for shooting stats
+    df['FG_PCT'] = np.where(df['FGA'] > 0, (df['FGM'] / df['FGA']) * 100, 0)
+    df['FG_PCT_avg3'] = df['FG_PCT'].rolling(3).mean().shift(1)
+    df['FG_PCT_season_avg'] = df.groupby('SEASON')['FG_PCT'].expanding().mean().reset_index(0, drop=True)
+
+    print("\nField Goal Percentage Stats:")
+    print(f"Average FG%: {df['FG_PCT'].mean():.1f}%")
+    print(f"Max FG%: {df['FG_PCT'].max():.1f}%")
+    print(f"Min FG%: {df['FG_PCT'].min():.1f}%")
+
+    # Extract opponent and map to full team name
     df['OPPONENT'] = df['MATCHUP'].apply(lambda x: x.split(' ')[-1])
-
+    
     team_abbrev_map = {
         'ATL': 'Atlanta Hawks', 'BOS': 'Boston Celtics', 'BKN': 'Brooklyn Nets',
         'CHA': 'Charlotte Hornets', 'CHI': 'Chicago Bulls', 'CLE': 'Cleveland Cavaliers',
@@ -277,55 +352,159 @@ def clean_features(df):
         'MIA': 'Miami Heat', 'MIL': 'Milwaukee Bucks', 'MIN': 'Minnesota Timberwolves',
         'NOP': 'New Orleans Pelicans', 'NYK': 'New York Knicks', 'OKC': 'Oklahoma City Thunder',
         'ORL': 'Orlando Magic', 'PHI': 'Philadelphia 76ers', 'PHX': 'Phoenix Suns',
-        'POR': 'Portland', 'SAC': 'Sacramento Kings', 'SAS': 'San Antonio Spurs',
+        'POR': 'Portland Trail Blazers', 'SAC': 'Sacramento Kings', 'SAS': 'San Antonio Spurs',
         'TOR': 'Toronto Raptors', 'UTA': 'Utah Jazz', 'WAS': 'Washington Wizards'
     }
-
+    
     df['OPPONENT_FULL'] = df['OPPONENT'].map(team_abbrev_map)
+    if df['OPPONENT_FULL'].isna().any():
+        print("\nWarning: Some opponent abbreviations could not be mapped to full team names")
+        print("Unmapped opponents:", df[df['OPPONENT_FULL'].isna()]['OPPONENT'].unique())
 
-    def get_opponent_avg_stat(row, stat):
-        past_games = df[(df['OPPONENT_FULL'] == row['OPPONENT_FULL']) & (df['GAME_DATE'] < row['GAME_DATE'])]
-        return past_games[stat].mean() if not past_games.empty else None
-
-    df['PTS_vs_opp_avg'] = df.apply(lambda row: get_opponent_avg_stat(row, 'PTS'), axis=1)
-    df['REB_vs_opp_avg'] = df.apply(lambda row: get_opponent_avg_stat(row, 'REB'), axis=1)
-    df['AST_vs_opp_avg'] = df.apply(lambda row: get_opponent_avg_stat(row, 'AST'), axis=1)
-
+    # Merge with team stats
     team_stats = load_team_defense_data()
     df = df.merge(team_stats, how='left', left_on=['OPPONENT_FULL', 'SEASON'], right_on=['TEAM', 'SEASON'])
     df.drop(columns=['TEAM'], inplace=True)
+
+    # Calculate opponent-specific stats - keep as raw numbers
+    def get_opponent_avg_stat(row, stat):
+        past_games = df[(df['OPPONENT_FULL'] == row['OPPONENT_FULL']) & (df['GAME_DATE'] < row['GAME_DATE'])]
+        if not past_games.empty:
+            return past_games[stat].mean()
+        return None
+
+    for stat in ['PTS', 'REB', 'AST', 'FG_PCT']:
+        df[f'{stat}_vs_opp_avg'] = df.apply(lambda row: get_opponent_avg_stat(row, stat), axis=1)
+
+    # Print averages for verification
+    print("\nKey Statistics Averages:")
+    for stat in ['PTS', 'REB', 'AST', 'FG_PCT']:
+        print(f"{stat}: {df[stat].mean():.1f}")
+        print(f"{stat}_avg3: {df[f'{stat}_avg3'].mean():.1f}")
+        print(f"{stat}_season_avg: {df[f'{stat}_season_avg'].mean():.1f}")
+        print(f"{stat}_vs_opp_avg: {df[f'{stat}_vs_opp_avg'].mean():.1f}")
+        print()
+
+    # Drop rows with missing values
     df.dropna(inplace=True)
 
     return df
 
 def train_eval(df):
-    features = [
-        'PTS_avg3', 'PTS_season_avg', 'PTS_vs_opp_avg',
-        'REB_avg3', 'REB_season_avg', 'REB_vs_opp_avg',
-        'AST_avg3', 'AST_season_avg', 'AST_vs_opp_avg',
-        'PLUSMINUS_avg3', 'DEF_RTG'
-    ]
-    targets = ['PTS', 'REB', 'AST']
+    current_season = df['SEASON'].iloc[-1]
+    current_season_data = df[df['SEASON'] == current_season]
+    
+    feature_groups = {
+        'recent_performance': {
+            'features': ['PTS_avg3', 'FG_PCT_avg3'],
+            'weight': 0.6
+        },
+        'season_stats': {
+            'features': ['PTS_season_avg'],
+            'weight': 0.4
+        }
+    }
 
-    x = df[features]
+    features = []
+    feature_weights = {}
+    for group, data in feature_groups.items():
+        features.extend(data['features'])
+        for feature in data['features']:
+            feature_weights[feature] = data['weight']
+
+    missing_features = [f for f in features if f not in df.columns]
+    if missing_features:
+        raise ValueError(f"Missing features in dataframe: {missing_features}")
+
+    targets = ['PTS', 'REB', 'AST']
+    models = {}
+    predictions = {}
+    metrics = {}
+
+    x = df[features].copy()
     y = df[targets]
 
-    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, shuffle=False)
+    print("\nCurrent Season Stats:")
+    for stat in targets:
+        current_avg = current_season_data[stat].mean()
+        recent_avg = current_season_data[stat].tail(10).mean()
+        historical_avg = df[df['SEASON'] != current_season][stat].mean()
+        print(f"{stat}:")
+        print(f"  Current Season Avg: {current_avg:.1f}")
+        print(f"  Recent 10 Games Avg: {recent_avg:.1f}")
+        print(f"  Historical Avg: {historical_avg:.1f}")
 
-    model = MultiOutputRegressor(RandomForestRegressor(n_estimators=100, random_state=42))
-    model.fit(x_train, y_train)
+    train_size = len(df[df['SEASON'] != current_season])
+    x_train = x[:train_size]
+    x_test = x[train_size:]
+    y_train = y[:train_size]
+    y_test = y[train_size:]
 
-    y_pred = model.predict(x_test)
+    for target in targets:
+        current_avg = current_season_data[target].mean()
+        recent_avg = current_season_data[target].tail(10).mean()
+        historical_avg = df[df['SEASON'] != current_season][target].mean()
+        
+        improvement_factor = current_avg / historical_avg if historical_avg > 0 else 1.0
+        
+        if target == 'PTS':
+            model = RandomForestRegressor(
+                n_estimators=1000,
+                max_depth=None,
+                min_samples_split=2,
+                min_samples_leaf=1,
+                random_state=42
+            )
+        else:
+            model = RandomForestRegressor(
+                n_estimators=500,
+                max_depth=None,
+                min_samples_split=2,
+                min_samples_leaf=1,
+                random_state=42
+            )
 
-    mae = mean_absolute_error(y_test, y_pred, multioutput='raw_values')
-    r2 = r2_score(y_test, y_pred, multioutput='raw_values')
+        model.fit(x_train, y_train[target])
+        base_pred = model.predict(x_test)
+        
+        if improvement_factor > 1.2:  # If player has improved significantly
+            y_pred = base_pred * improvement_factor
+        else:
+            y_pred = base_pred
+        
+        models[target] = model
+        predictions[target] = y_pred
+        metrics[target] = {
+            'mae': mean_absolute_error(y_test[target], y_pred),
+            'r2': r2_score(y_test[target], y_pred)
+        }
 
     print("\n--- Model Evaluation ---")
-    for i, stat in enumerate(targets):
-        print(f"{stat}: MAE = {mae[i]:.2f}, R² = {r2[i]:.2f}")
+    for target in targets:
+        print(f"\n{target}:")
+        print(f"MAE = {metrics[target]['mae']:.2f}")
+        print(f"R² = {metrics[target]['r2']:.2f}")
+        print(f"Predicted range: {predictions[target].min():.1f} to {predictions[target].max():.1f}")
+        print(f"Actual range: {y_test[target].min():.1f} to {y_test[target].max():.1f}")
+        
+        print("\nFeature Importance:")
+        importances = models[target].feature_importances_
+        feature_imp = list(zip(features, importances))
+        feature_imp.sort(key=lambda x: x[1], reverse=True)
+        for feature, importance in feature_imp:
+            print(f"{feature}: {importance:.4f}")
 
-    model.feature_names_in_ = x.columns.tolist()
-    return model, x_test, y_test, y_pred
+    combined_model = MultiOutputRegressor(RandomForestRegressor(
+        n_estimators=1000,
+        max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        random_state=42
+    ))
+    combined_model.estimators_ = [models[target] for target in targets]
+    combined_model.feature_names_in_ = features
+
+    return combined_model, x_test, y_test, np.column_stack([predictions[target] for target in targets])
 
 def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
     match = team_stats_df[
@@ -339,17 +518,32 @@ def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
 
 
 def predict_against_opponent(player_name, opponent_name, df_clean, model, team_stats_df):
+    current_season = df_clean['SEASON'].iloc[-1]
+    current_season_data = df_clean[df_clean['SEASON'] == current_season]
+    historical_data = df_clean[df_clean['SEASON'] != current_season]
+    
     latest = df_clean.iloc[-1]
     season = latest['SEASON']
-    def_rtg = get_team_def_rtg_by_name(opponent_name, season, team_stats_df)
-    if def_rtg is None:
-        raise ValueError(f"No DEF_RTG found for {opponent_name} in {season}")
+    
+    features = model.feature_names_in_
+    input_features = pd.DataFrame(columns=features, index=[0])
 
-    input_features_dict = {name: latest[name] for name in model.feature_names_in_ if name != 'DEF_RTG'}
-    input_features_dict['DEF_RTG'] = def_rtg
+    for feature in features:
+        if feature in latest:
+            input_features[feature] = latest[feature]
+        else:
+            input_features[feature] = df_clean[feature].mean()
 
-    input_features = pd.DataFrame([input_features_dict])
-    prediction = model.predict(input_features)[0]
+    base_prediction = model.predict(input_features)[0]
+    
+    improvement_factors = []
+    for i, stat in enumerate(['PTS', 'REB', 'AST']):
+        current_avg = current_season_data[stat].mean()
+        historical_avg = historical_data[stat].mean() if not historical_data.empty else current_avg
+        improvement_factor = current_avg / historical_avg if historical_avg > 0 else 1.0
+        improvement_factors.append(improvement_factor if improvement_factor > 1.2 else 1.0)
+    
+    prediction = base_prediction * improvement_factors
 
     return {
         'Player': player_name,
@@ -389,24 +583,39 @@ def filter_games_without_all_teammates(df, absent_teammates, season='2024-25'):
 
 def fetch_schedule():
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
-    response = requests.get(url)
-    return response.json() if response.status_code == 200 else None
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching schedule: {e}")
+        return None
 
 
 def find_next_game(schedule, team_id):
+    if not schedule or 'leagueSchedule' not in schedule or 'gameDates' not in schedule['leagueSchedule']:
+        print("Invalid schedule data")
+        return None
+
     today = datetime.datetime.now().date()
     games = schedule['leagueSchedule']['gameDates']
+    
     for game_date in games:
-        game_day = datetime.datetime.strptime(game_date['gameDate'], '%m/%d/%Y %H:%M:%S').date()
-        if game_day >= today:
-            for game in game_date['games']:
-                if str(game['homeTeam']['teamId']) == str(team_id) or str(game['awayTeam']['teamId']) == str(team_id):
-                    opponent = game['awayTeam'] if str(game['homeTeam']['teamId']) == str(team_id) else game['homeTeam']
-                    return {
-                        'game_date': game_day,
-                        'opponent_team_id': opponent['teamId'],
-                        'opponent_team_name': opponent['teamName']
-                    }
+        try:
+            game_day = datetime.datetime.strptime(game_date['gameDate'], '%m/%d/%Y %H:%M:%S').date()
+            if game_day >= today:
+                for game in game_date.get('games', []):
+                    if str(game['homeTeam']['teamId']) == str(team_id) or str(game['awayTeam']['teamId']) == str(team_id):
+                        opponent = game['awayTeam'] if str(game['homeTeam']['teamId']) == str(team_id) else game['homeTeam']
+                        return {
+                            'game_date': game_day,
+                            'opponent_team_id': opponent['teamId'],
+                            'opponent_team_name': opponent['teamName']
+                        }
+        except (KeyError, ValueError) as e:
+            print(f"Error processing game date: {e}")
+            continue
+            
     return None
 
 def get_team_abbrev_from_logs_or_cache(player_id):
@@ -463,56 +672,78 @@ def get_out_teammates(player_name, structured_data):
 
 
 if __name__ == "__main__":
-    player_name = "Tyler Herro"
-
-    df = get_all_game_logs(player_name)
-
-    if 'MATCHUP' not in df.columns:
-        print("MATCHUP column missing — retrying game log fetch.")
-        df = get_all_game_logs(player_name)
-        if 'MATCHUP' not in df.columns:
-            print(df.head())
-            raise ValueError("MATCHUP column still missing after retry. Check API limits or connection.")
-
-    structured_injuries = structure_injuries(data)
-    print("Available teams in injury data:", list(structured_injuries.keys()))
-
-    out_teammates = get_out_teammates(player_name, structured_injuries)
-
-    df_filtered = df
-    df_filtered = filter_games_without_all_teammates(df_filtered, out_teammates)
-
     try:
-        team_id = get_player_team(player_name)
-    except ValueError as e:
-        print(f"Could not get team ID for {player_name} from cache: {e}")
-        player_id = get_player_id(player_name)
-        team_abbrev = get_team_abbrev_from_logs_or_cache(player_id)
-        team_id = TEAM_ABBREV_TO_ID.get(team_abbrev)
-        if not team_id:
-            raise ValueError(f"Team ID could not be resolved for {team_abbrev}")
+        player_name = "Cade Cunningham"
 
-    df_clean = clean_features(df_filtered)
-    if df_clean.empty:
-        raise ValueError("No clean data available for training.")
+        print(f"Fetching game logs for {player_name}...")
+        df = get_all_game_logs(player_name)
 
-    team_stats_df = load_team_defense_data()
-    model, _, _, _ = train_eval(df_clean)
+        if df.empty:
+            raise ValueError(f"No game logs found for {player_name}")
 
-    schedule = fetch_schedule()
-    next_game_info = find_next_game(schedule, team_id)
+        if 'MATCHUP' not in df.columns:
+            print("MATCHUP column missing — retrying game log fetch.")
+            df = get_all_game_logs(player_name)
+            if 'MATCHUP' not in df.columns:
+                print(df.head())
+                raise ValueError("MATCHUP column still missing after retry. Check API limits or connection.")
 
-    if next_game_info:
-        print(f"\nNext game: {next_game_info['game_date']} vs {next_game_info['opponent_team_name']}")
-        prediction = predict_against_opponent(
-            player_name,
-            next_game_info['opponent_team_name'],
-            df_clean,
-            model,
-            team_stats_df
-        )
-        print("\n--- Next Game Prediction ---")
-        print(prediction)
-    else:
-        print("No upcoming games found.")
+        print("Processing injury data...")
+        structured_injuries = structure_injuries(data)
+        print("Available teams in injury data:", list(structured_injuries.keys()))
+
+        out_teammates = get_out_teammates(player_name, structured_injuries)
+        print(f"Found {len(out_teammates)} out teammates")
+
+        df_filtered = df
+        if out_teammates:
+            df_filtered = filter_games_without_all_teammates(df_filtered, out_teammates)
+
+        print("Getting team information...")
+        try:
+            team_id = get_player_team(player_name)
+        except ValueError as e:
+            print(f"Could not get team ID for {player_name} from cache: {e}")
+            player_id = get_player_id(player_name)
+            team_abbrev = get_team_abbrev_from_logs_or_cache(player_id)
+            team_id = TEAM_ABBREV_TO_ID.get(team_abbrev)
+            if not team_id:
+                raise ValueError(f"Team ID could not be resolved for {team_abbrev}")
+
+        print("Cleaning features...")
+        df_clean = clean_features(df_filtered)
+        if df_clean.empty:
+            raise ValueError("No clean data available for training.")
+
+        print("Loading team defense data...")
+        team_stats_df = load_team_defense_data()
+        if team_stats_df.empty:
+            print("Warning: No team defense data available. Predictions may be less accurate.")
+
+        print("Training model...")
+        model, _, _, _ = train_eval(df_clean)
+
+        print("Fetching schedule...")
+        schedule = fetch_schedule()
+        if not schedule:
+            print("Warning: Could not fetch schedule. Cannot predict next game.")
+        else:
+            next_game_info = find_next_game(schedule, team_id)
+            if next_game_info:
+                print(f"\nNext game: {next_game_info['game_date']} vs {next_game_info['opponent_team_name']}")
+                prediction = predict_against_opponent(
+                    player_name,
+                    next_game_info['opponent_team_name'],
+                    df_clean,
+                    model,
+                    team_stats_df
+                )
+                print("\n--- Next Game Prediction ---")
+                print(prediction)
+            else:
+                print("No upcoming games found.")
+
+    except Exception as e:
+        print(f"\nError: {e}")
+        print("Please check the error message above and try again.")
 
