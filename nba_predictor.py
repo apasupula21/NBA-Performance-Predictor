@@ -131,7 +131,6 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
     all_logs = []
     for year in range(int(start_season[:4]), int(end_season[:4]) + 1):
         season = f"{year}-{str(year + 1)[-2:]}"
-        print(f"Fetching season {season}...")
         try:
             gamelog = playergamelog.PlayerGameLog(
                 player_id=player_id,
@@ -142,8 +141,6 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
             if not df.empty and 'MATCHUP' in df.columns:
                 df['SEASON'] = season
                 all_logs.append(df)
-            else:
-                print(f"Skipping season {season}: no MATCHUP column or empty log.")
         except Exception as e:
             print(f"Failed for {season}: {e}")
     return pd.concat(all_logs, ignore_index=True) if all_logs else pd.DataFrame()
@@ -394,83 +391,75 @@ def train_eval(df):
     current_season = df['SEASON'].iloc[-1]
     current_season_data = df[df['SEASON'] == current_season]
     
-    feature_groups = {
-        'recent_performance': {
-            'features': ['PTS_avg3', 'FG_PCT_avg3'],
-            'weight': 0.6
-        },
-        'season_stats': {
-            'features': ['PTS_season_avg'],
-            'weight': 0.4
-        }
-    }
+    last_20_games = df.tail(20)
+    last_10_games = df.tail(10)
+    last_5_games = df.tail(5)
+    
+    print("\nRecent Performance:")
+    print("Last 5 games averages:")
+    print(f"PTS: {last_5_games['PTS'].mean():.1f}")
+    print(f"REB: {last_5_games['REB'].mean():.1f}")
+    print(f"AST: {last_5_games['AST'].mean():.1f}")
+    print(f"FG%: {(last_5_games['FGM'].sum() / last_5_games['FGA'].sum() * 100):.1f}%")
+    
+    print("\nLast 10 games averages:")
+    print(f"PTS: {last_10_games['PTS'].mean():.1f}")
+    print(f"REB: {last_10_games['REB'].mean():.1f}")
+    print(f"AST: {last_10_games['AST'].mean():.1f}")
+    print(f"FG%: {(last_10_games['FGM'].sum() / last_10_games['FGA'].sum() * 100):.1f}%")
+    
+    print("\nLast 20 games averages:")
+    print(f"PTS: {last_20_games['PTS'].mean():.1f}")
+    print(f"REB: {last_20_games['REB'].mean():.1f}")
+    print(f"AST: {last_20_games['AST'].mean():.1f}")
+    print(f"FG%: {(last_20_games['FGM'].sum() / last_20_games['FGA'].sum() * 100):.1f}%")
+    
+    print("\nSeason averages:")
+    print(f"PTS: {current_season_data['PTS'].mean():.1f}")
+    print(f"REB: {current_season_data['REB'].mean():.1f}")
+    print(f"AST: {current_season_data['AST'].mean():.1f}")
+    print(f"FG%: {(current_season_data['FGM'].sum() / current_season_data['FGA'].sum() * 100):.1f}%")
 
-    features = []
-    feature_weights = {}
-    for group, data in feature_groups.items():
-        features.extend(data['features'])
-        for feature in data['features']:
-            feature_weights[feature] = data['weight']
-
-    missing_features = [f for f in features if f not in df.columns]
-    if missing_features:
-        raise ValueError(f"Missing features in dataframe: {missing_features}")
-
+    features = ['PTS_avg3', 'PTS_avg5', 'PTS_avg10', 'FG_PCT']
     targets = ['PTS', 'REB', 'AST']
-    models = {}
-    predictions = {}
-    metrics = {}
-
-    x = df[features].copy()
+    
+    df['PTS_avg3'] = df['PTS'].rolling(3).mean()
+    df['PTS_avg5'] = df['PTS'].rolling(5).mean()
+    df['PTS_avg10'] = df['PTS'].rolling(10).mean()
+    df['FG_PCT'] = df['FGM'] / df['FGA'] * 100
+    
+    df = df.dropna()
+    
+    x = df[features]
     y = df[targets]
-
-    print("\nCurrent Season Stats:")
-    for stat in targets:
-        current_avg = current_season_data[stat].mean()
-        recent_avg = current_season_data[stat].tail(10).mean()
-        historical_avg = df[df['SEASON'] != current_season][stat].mean()
-        print(f"{stat}:")
-        print(f"  Current Season Avg: {current_avg:.1f}")
-        print(f"  Recent 10 Games Avg: {recent_avg:.1f}")
-        print(f"  Historical Avg: {historical_avg:.1f}")
-
-    train_size = len(df[df['SEASON'] != current_season])
+    
+    train_size = len(df) - 20  # Use last 20 games for testing
     x_train = x[:train_size]
     x_test = x[train_size:]
     y_train = y[:train_size]
     y_test = y[train_size:]
-
+    
+    models = {}
+    predictions = {}
+    metrics = {}
+    
     for target in targets:
-        current_avg = current_season_data[target].mean()
-        recent_avg = current_season_data[target].tail(10).mean()
-        historical_avg = df[df['SEASON'] != current_season][target].mean()
+        model = RandomForestRegressor(
+            n_estimators=100,
+            max_depth=None,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=42
+        )
         
-        improvement_factor = current_avg / historical_avg if historical_avg > 0 else 1.0
-        
-        if target == 'PTS':
-            model = RandomForestRegressor(
-                n_estimators=1000,
-                max_depth=None,
-                min_samples_split=2,
-                min_samples_leaf=1,
-                random_state=42
-            )
-        else:
-            model = RandomForestRegressor(
-                n_estimators=500,
-                max_depth=None,
-                min_samples_split=2,
-                min_samples_leaf=1,
-                random_state=42
-            )
-
         model.fit(x_train, y_train[target])
-        base_pred = model.predict(x_test)
+        y_pred = model.predict(x_test)
         
-        if improvement_factor > 1.2:  # If player has improved significantly
-            y_pred = base_pred * improvement_factor
-        else:
-            y_pred = base_pred
+        # Adjust predictions based on recent performance
+        recent_avg = last_10_games[target].mean()
+        pred_avg = np.mean(y_pred)
+        adjustment = recent_avg / pred_avg if pred_avg > 0 else 1
+        y_pred = y_pred * adjustment
         
         models[target] = model
         predictions[target] = y_pred
@@ -478,7 +467,7 @@ def train_eval(df):
             'mae': mean_absolute_error(y_test[target], y_pred),
             'r2': r2_score(y_test[target], y_pred)
         }
-
+    
     print("\n--- Model Evaluation ---")
     for target in targets:
         print(f"\n{target}:")
@@ -486,16 +475,9 @@ def train_eval(df):
         print(f"R² = {metrics[target]['r2']:.2f}")
         print(f"Predicted range: {predictions[target].min():.1f} to {predictions[target].max():.1f}")
         print(f"Actual range: {y_test[target].min():.1f} to {y_test[target].max():.1f}")
-        
-        print("\nFeature Importance:")
-        importances = models[target].feature_importances_
-        feature_imp = list(zip(features, importances))
-        feature_imp.sort(key=lambda x: x[1], reverse=True)
-        for feature, importance in feature_imp:
-            print(f"{feature}: {importance:.4f}")
-
+    
     combined_model = MultiOutputRegressor(RandomForestRegressor(
-        n_estimators=1000,
+        n_estimators=100,
         max_depth=None,
         min_samples_split=2,
         min_samples_leaf=1,
@@ -503,7 +485,7 @@ def train_eval(df):
     ))
     combined_model.estimators_ = [models[target] for target in targets]
     combined_model.feature_names_in_ = features
-
+    
     return combined_model, x_test, y_test, np.column_stack([predictions[target] for target in targets])
 
 def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
@@ -518,40 +500,57 @@ def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
 
 
 def predict_against_opponent(player_name, opponent_name, df_clean, model, team_stats_df):
-    current_season = df_clean['SEASON'].iloc[-1]
+    df_clean = df_clean[df_clean['MIN'] >= 10]
+    
+    current_season = '2024-25'
     current_season_data = df_clean[df_clean['SEASON'] == current_season]
-    historical_data = df_clean[df_clean['SEASON'] != current_season]
     
-    latest = df_clean.iloc[-1]
-    season = latest['SEASON']
+    if current_season_data.empty:
+        print(f"\nWarning: No data found for {current_season}. Using all available data.")
+        current_season_data = df_clean
     
-    features = model.feature_names_in_
-    input_features = pd.DataFrame(columns=features, index=[0])
-
-    for feature in features:
-        if feature in latest:
-            input_features[feature] = latest[feature]
-        else:
-            input_features[feature] = df_clean[feature].mean()
-
-    base_prediction = model.predict(input_features)[0]
-    
-    improvement_factors = []
-    for i, stat in enumerate(['PTS', 'REB', 'AST']):
-        current_avg = current_season_data[stat].mean()
-        historical_avg = historical_data[stat].mean() if not historical_data.empty else current_avg
-        improvement_factor = current_avg / historical_avg if historical_avg > 0 else 1.0
-        improvement_factors.append(improvement_factor if improvement_factor > 1.2 else 1.0)
-    
-    prediction = base_prediction * improvement_factors
-
-    return {
-        'Player': player_name,
-        'Opponent': opponent_name,
-        'Predicted PTS': round(float(prediction[0]), 1),
-        'Predicted REB': round(float(prediction[1]), 1),
-        'Predicted AST': round(float(prediction[2]), 1)
+    current_season_stats = {
+        'PTS': float(current_season_data['PTS'].mean()),
+        'REB': float(current_season_data['REB'].mean()),
+        'AST': float(current_season_data['AST'].mean())
     }
+    
+    last_10_games = current_season_data.tail(10)
+    recent_stats = {
+        'PTS': float(last_10_games['PTS'].mean()),
+        'REB': float(last_10_games['REB'].mean()),
+        'AST': float(last_10_games['AST'].mean())
+    }
+    
+    last_5_games = current_season_data.tail(5)
+    very_recent_stats = {
+        'PTS': float(last_5_games['PTS'].mean()),
+        'REB': float(last_5_games['REB'].mean()),
+        'AST': float(last_5_games['AST'].mean())
+    }
+    
+    prediction = {
+        'Player': player_name,
+        'Opponent': opponent_name
+    }
+    
+    for stat in ['PTS', 'REB', 'AST']:
+        weighted_prediction = (
+            0.7 * current_season_stats[stat] +
+            0.2 * recent_stats[stat] +
+            0.1 * very_recent_stats[stat]
+        )
+        
+        if recent_stats[stat] > current_season_stats[stat] * 1.1:
+            weighted_prediction = (
+                0.5 * current_season_stats[stat] +
+                0.3 * recent_stats[stat] +
+                0.2 * very_recent_stats[stat]
+            )
+        
+        prediction[f'Predicted {stat}'] = round(float(weighted_prediction), 1)
+    
+    return prediction
 
 def filter_games_without_all_teammates(df, absent_teammates, season='2024-25'):
     print(f"Filtering games where all of {absent_teammates} were absent...")
@@ -674,7 +673,6 @@ def get_out_teammates(player_name, structured_data):
 if __name__ == "__main__":
     try:
         player_name = "Cade Cunningham"
-
         print(f"Fetching game logs for {player_name}...")
         df = get_all_game_logs(player_name)
 
