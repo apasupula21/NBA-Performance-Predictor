@@ -56,12 +56,12 @@ url = f"https://api.sportradar.us/nba/trial/v8/en/league/injuries.json?api_key={
 
 try:
     response = session.get(url, timeout=10)
-    response.raise_for_status()  # Raise an exception for bad status codes
+    response.raise_for_status()  
     data = response.json()
     print("Successfully fetched injury data")
 except requests.exceptions.RequestException as e:
     print(f"Error fetching injury data: {e}")
-    data = {"teams": []}  # Initialize with empty data structure
+    data = {"teams": []}  
 
 def get_player_id(name):
     player_dict = players.find_players_by_full_name(name)
@@ -84,9 +84,8 @@ def update_team_roster_cache():
             print(f"Failed to fetch roster for {team_name}: {e}")
             failed_teams.append(team)
 
-        time.sleep(1.5)  # 🧘 slow down to avoid getting blocked
+        time.sleep(1.5)  
 
-    # Retry once for the teams that failed
     if failed_teams:
         print("\nRetrying failed teams...\n")
         for team in failed_teams:
@@ -130,7 +129,6 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
     player_id = get_player_id(player_name)
     all_logs = []
     
-    # First try to get current season data with retries
     max_retries = 3
     current_season = '2024-25'
     
@@ -151,17 +149,15 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
         except Exception as e:
             print(f"Attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2)  # Wait before retrying
+                time.sleep(2)
             else:
                 print(f"Failed to fetch current season data after {max_retries} attempts")
     
-    # Combine all logs and sort by date
     if all_logs:
         combined_df = pd.concat(all_logs, ignore_index=True)
         combined_df['GAME_DATE'] = pd.to_datetime(combined_df['GAME_DATE'])
         combined_df = combined_df.sort_values('GAME_DATE')
         
-        # Print debug info
         print(f"\nTotal games fetched: {len(combined_df)}")
         print(f"Date range: {combined_df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {combined_df['GAME_DATE'].max().strftime('%Y-%m-%d')}")
         
@@ -186,8 +182,7 @@ def load_team_defense_data(stats_folder='team_stats'):
                 else:
                     df = pd.read_csv(os.path.join(stats_folder, file))
                 
-                # Clean up the data
-                df = df[df['Rk'].notna()]  # Keep only rows with valid Rk
+                df = df[df['Rk'].notna()] 
                 df['Team'] = df['Team'].replace({
                     'LA Clippers': 'Los Angeles Clippers',
                     'Portland Trl': 'Portland Trail Blazers',
@@ -196,20 +191,17 @@ def load_team_defense_data(stats_folder='team_stats'):
                     'LA Lakers': 'Los Angeles Lakers'
                 })
 
-                # Create a new dataframe with only the columns we need
                 new_df = pd.DataFrame()
                 new_df['TEAM'] = df['Team']
                 new_df['DEF_RTG'] = df['DRtg']
                 new_df['OFF_RTG'] = df['ORtg']
                 new_df['PACE'] = df['Pace']
                 new_df['EFG_PCT'] = df['eFG%']
-                # Convert percentages from decimal to percentage format if needed
                 new_df['TOV_PCT'] = df['TOV%'].apply(lambda x: x if x <= 100 else x/100)
                 new_df['OREB_PCT'] = df['ORB%'].apply(lambda x: x if x <= 100 else x/100)
                 new_df['FT_RATE'] = df['FT/FGA']
                 new_df['SEASON'] = f"{int(season)-1}-{season[-2:]}"
 
-                # Verify percentage ranges
                 for col in ['TOV_PCT', 'OREB_PCT']:
                     if new_df[col].max() > 100 or new_df[col].min() < 0:
                         print(f"Warning: {col} has values outside 0-100 range: {new_df[col].min():.1f} to {new_df[col].max():.1f}")
@@ -226,7 +218,6 @@ def load_team_defense_data(stats_folder='team_stats'):
 
     all_stats = pd.concat(all_seasons, ignore_index=True)
     
-    # Fill missing values with season averages
     for col in all_stats.columns:
         if col not in ['TEAM', 'SEASON']:
             season_means = all_stats.groupby('SEASON')[col].transform('mean')
@@ -315,29 +306,24 @@ def build_availability_table(target_player, teammates, season='2023-24'):
     return table
 
 def clean_features(df):
-    # Print initial data sample
     print("\nInitial data sample:")
     print(df[['FGM', 'FGA']].head())
     
     df = df.sort_values('GAME_DATE')
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
 
-    # Basic stats - keep as raw numbers, don't convert to percentages
     df = df[['SEASON', 'GAME_DATE', 'MATCHUP', 'PTS', 'REB', 'AST', 'PLUS_MINUS', 'FGA', 'FGM', 'MIN']]
     df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
     
-    # Convert FGM and FGA to numeric if they aren't already
     df['FGM'] = pd.to_numeric(df['FGM'], errors='coerce')
     df['FGA'] = pd.to_numeric(df['FGA'], errors='coerce')
     
     print("\nAfter numeric conversion:")
     print(df[['FGM', 'FGA']].head())
     
-    # Only drop rows where all key stats are missing
     df = df.dropna(subset=['PTS', 'REB', 'AST', 'MIN'], how='all')
     print(f"\nGames after initial cleaning: {len(df)}")
 
-    # Rolling averages with different windows - keep as raw numbers
     for window in [3, 5, 10]:
         df[f'PTS_avg{window}'] = df['PTS'].rolling(window).mean().shift(1)
         df[f'REB_avg{window}'] = df['REB'].rolling(window).mean().shift(1)
@@ -346,14 +332,12 @@ def clean_features(df):
         df[f'FGM_avg{window}'] = df['FGM'].rolling(window).mean().shift(1)
         df[f'FGA_avg{window}'] = df['FGA'].rolling(window).mean().shift(1)
 
-    # Season averages - keep as raw numbers
     df['PTS_season_avg'] = df.groupby('SEASON')['PTS'].expanding().mean().reset_index(0, drop=True)
     df['REB_season_avg'] = df.groupby('SEASON')['REB'].expanding().mean().reset_index(0, drop=True)
     df['AST_season_avg'] = df.groupby('SEASON')['AST'].expanding().mean().reset_index(0, drop=True)
     df['FGM_season_avg'] = df.groupby('SEASON')['FGM'].expanding().mean().reset_index(0, drop=True)
     df['FGA_season_avg'] = df.groupby('SEASON')['FGA'].expanding().mean().reset_index(0, drop=True)
 
-    # Only calculate percentages for shooting stats
     df['FG_PCT'] = np.where(df['FGA'] > 0, (df['FGM'] / df['FGA']) * 100, 0)
     df['FG_PCT_avg3'] = df['FG_PCT'].rolling(3).mean().shift(1)
     df['FG_PCT_season_avg'] = df.groupby('SEASON')['FG_PCT'].expanding().mean().reset_index(0, drop=True)
@@ -363,7 +347,6 @@ def clean_features(df):
     print(f"Max FG%: {df['FG_PCT'].max():.1f}%")
     print(f"Min FG%: {df['FG_PCT'].min():.1f}%")
 
-    # Extract opponent and map to full team name
     df['OPPONENT'] = df['MATCHUP'].apply(lambda x: x.split(' ')[-1])
     
     team_abbrev_map = {
@@ -384,12 +367,10 @@ def clean_features(df):
         print("\nWarning: Some opponent abbreviations could not be mapped to full team names")
         print("Unmapped opponents:", df[df['OPPONENT_FULL'].isna()]['OPPONENT'].unique())
 
-    # Merge with team stats
     team_stats = load_team_defense_data()
     df = df.merge(team_stats, how='left', left_on=['OPPONENT_FULL', 'SEASON'], right_on=['TEAM', 'SEASON'])
     df.drop(columns=['TEAM'], inplace=True)
 
-    # Calculate opponent-specific stats - keep as raw numbers
     def get_opponent_avg_stat(row, stat):
         past_games = df[(df['OPPONENT_FULL'] == row['OPPONENT_FULL']) & (df['GAME_DATE'] < row['GAME_DATE'])]
         if not past_games.empty:
@@ -399,7 +380,6 @@ def clean_features(df):
     for stat in ['PTS', 'REB', 'AST', 'FG_PCT']:
         df[f'{stat}_vs_opp_avg'] = df.apply(lambda row: get_opponent_avg_stat(row, stat), axis=1)
 
-    # Print averages for verification
     print("\nKey Statistics Averages:")
     for stat in ['PTS', 'REB', 'AST', 'FG_PCT']:
         print(f"{stat}: {df[stat].mean():.1f}")
@@ -408,14 +388,13 @@ def clean_features(df):
         print(f"{stat}_vs_opp_avg: {df[f'{stat}_vs_opp_avg'].mean():.1f}")
         print()
 
-    # Only drop rows where all features are missing
     df = df.dropna(subset=['PTS_avg3', 'PTS_avg5', 'PTS_avg10', 'FG_PCT'], how='all')
     print(f"\nFinal number of games after cleaning: {len(df)}")
 
     return df
 
 def train_eval(df):
-    if df.empty or len(df) < 5:  # Check if we have enough data
+    if df.empty or len(df) < 5: 
         print("Insufficient data for training. Need at least 5 games.")
         return None, None, None, None
         
@@ -457,26 +436,23 @@ def train_eval(df):
     features = ['PTS_avg3', 'PTS_avg5', 'PTS_avg10', 'FG_PCT']
     targets = ['PTS', 'REB', 'AST']
     
-    # Only proceed with model training if we have enough data
-    if len(df) >= 10:  # Reduced minimum games requirement
+    if len(df) >= 10: 
         df['PTS_avg3'] = df['PTS'].rolling(3).mean()
         df['PTS_avg5'] = df['PTS'].rolling(5).mean()
         df['PTS_avg10'] = df['PTS'].rolling(10).mean()
         df['FG_PCT'] = df['FGM'] / df['FGA'] * 100
         
-        # Only drop rows where all features are missing
         df = df.dropna(subset=features, how='all')
         print(f"\nGames after feature cleaning: {len(df)}")
         
-        if len(df) < 10:  # Check again after dropping NaN values
+        if len(df) < 10:
             print("Not enough data after cleaning for model training")
             return None, None, None, None
             
         x = df[features]
         y = df[targets]
         
-        # Use a smaller test set if we don't have enough data
-        test_size = min(10, len(df) // 3)  # Use at most 10 games for testing
+        test_size = min(10, len(df) // 3) 
         train_size = len(df) - test_size
         
         x_train = x[:train_size]
@@ -500,7 +476,6 @@ def train_eval(df):
             model.fit(x_train, y_train[target])
             y_pred = model.predict(x_test)
             
-            # Adjust predictions based on recent performance
             recent_avg = last_10_games[target].mean()
             pred_avg = np.mean(y_pred)
             adjustment = recent_avg / pred_avg if pred_avg > 0 else 1
