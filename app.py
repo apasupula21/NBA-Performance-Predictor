@@ -31,17 +31,19 @@ def get_player_list():
 player_list = get_player_list()
 
 st.sidebar.header("Player Selection")
-player_name = st.sidebar.selectbox("Select Player", player_list, index=player_list.index("Cade Cunningham") if "Cade Cunningham" in player_list else 0)
-compare_player = st.sidebar.selectbox("Select Player to Compare (optional)", [""] + player_list)
+player_name = st.sidebar.selectbox("Select Player", player_list, 
+                                 index=player_list.index("James Harden") if "James Harden" in player_list else 0,
+                                 key="player_select")
+compare_player = st.sidebar.selectbox("Select Player to Compare (optional)", [""] + player_list,
+                                    key="compare_player_select")
 
 @st.cache_data
-def load_player_data(player_name):
-    df = get_all_game_logs(player_name)
+def load_player_data(player_name, start_season='2010-11', end_season='2024-25'):
+    df = get_all_game_logs(player_name, start_season, end_season)
     if df.empty:
         st.error("No data found for this player")
         return None
     
-    # Sort by date and ensure we have all games
     df = df.sort_values('GAME_DATE')
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     
@@ -63,14 +65,14 @@ def get_shot_data(player_name, season='2024-25', max_retries=3):
                 season_nullable=season,
                 context_measure_simple='FGA',
                 season_type_all_star='Regular Season',
-                timeout=30  # Increase timeout to 30 seconds
+                timeout=30
             )
             df = shot_data.get_data_frames()[0]
             return df
         except Exception as e:
             if attempt < max_retries - 1:
                 st.warning(f"Attempt {attempt + 1} failed. Retrying...")
-                time.sleep(2)  # Wait 2 seconds before retrying
+                time.sleep(2)
             else:
                 st.error(f"Failed to fetch shot data after {max_retries} attempts: {e}")
                 return None
@@ -78,198 +80,239 @@ def get_shot_data(player_name, season='2024-25', max_retries=3):
 df = load_player_data(player_name)
 
 if df is not None:
-    df_clean = clean_features(df)
-    current_season = '2024-25'
-    current_season_data = df_clean[df_clean['SEASON'] == current_season]
+    df_clean = clean_features(df, player_name)
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Current Season PPG", f"{current_season_data['PTS'].mean():.1f}")
-    with col2:
-        st.metric("Current Season RPG", f"{current_season_data['REB'].mean():.1f}")
-    with col3:
-        st.metric("Current Season APG", f"{current_season_data['AST'].mean():.1f}")
+    # Get unique seasons and sort them in reverse chronological order
+    available_seasons = sorted(df_clean['SEASON'].unique(), reverse=True)
     
-    st.subheader("Shooting Heatmap")
-    shot_df = get_shot_data(player_name, current_season)
+    # Create tabs for different sections
+    tab1, tab2 = st.tabs(["Overview", "Game-by-Game Performance"])
     
-    if shot_df is not None and not shot_df.empty:
-        court_fig = go.Figure()
-        
-        court_length = 94
-        court_width = 50
-        hoop_radius = 1.5
-        key_width = 16
-        key_length = 19
-        three_point_radius = 23.75
-        three_point_side_radius = 22
-        
-        court_fig.add_shape(type="rect", x0=-court_width/2, y0=0, x1=court_width/2, y1=court_length,
-                          line=dict(color="black", width=2), fillcolor="white")
-        
-        court_fig.add_shape(type="rect", x0=-key_width/2, y0=0, x1=key_width/2, y1=key_length,
-                          line=dict(color="black", width=2))
-        
-        court_fig.add_shape(type="circle", x0=-hoop_radius, y0=key_length-hoop_radius, 
-                          x1=hoop_radius, y1=key_length+hoop_radius,
-                          line=dict(color="black", width=2))
-        
-        court_fig.add_shape(type="path",
-                          path=f"M {-three_point_side_radius} 0 L {-three_point_side_radius} {three_point_radius} A {three_point_radius} {three_point_radius} 0 0 0 {three_point_side_radius} {three_point_radius} L {three_point_side_radius} 0",
-                          line=dict(color="black", width=2))
-        
-        made_shots = shot_df[shot_df['SHOT_MADE_FLAG'] == 1]
-        missed_shots = shot_df[shot_df['SHOT_MADE_FLAG'] == 0]
-        
-        court_fig.add_trace(go.Scatter(
-            x=made_shots['LOC_X'],
-            y=made_shots['LOC_Y'],
-            mode='markers',
-            name='Made Shots',
-            marker=dict(
-                color='#00FF00',
-                size=12,
-                opacity=0.8,
-                line=dict(color='black', width=1)
-            ),
-            customdata=np.stack((made_shots['SHOT_DISTANCE'], made_shots['SHOT_TYPE']), axis=-1),
-            hovertemplate="<b>Made Shot</b><br>Distance: %{customdata[0]} ft<br>Type: %{customdata[1]}<extra></extra>"
-        ))
-        
-        court_fig.add_trace(go.Scatter(
-            x=missed_shots['LOC_X'],
-            y=missed_shots['LOC_Y'],
-            mode='markers',
-            name='Missed Shots',
-            marker=dict(
-                color='#FF0000',
-                size=12,
-                opacity=0.8,
-                line=dict(color='black', width=1)
-            ),
-            customdata=np.stack((missed_shots['SHOT_DISTANCE'], missed_shots['SHOT_TYPE']), axis=-1),
-            hovertemplate="<b>Missed Shot</b><br>Distance: %{customdata[0]} ft<br>Type: %{customdata[1]}<extra></extra>"
-        ))
-        
-        court_fig.update_layout(
-            title=f"{player_name}'s Shot Chart - {current_season}",
-            xaxis=dict(
-                range=[-court_width/2, court_width/2],
-                showgrid=False,
-                zeroline=False,
-                showticklabels=False
-            ),
-            yaxis=dict(
-                range=[0, court_length],
-                showgrid=False,
-                zeroline=False,
-                showticklabels=False
-            ),
-            showlegend=True,
-            height=800,
-            plot_bgcolor='white',
-            paper_bgcolor='white',
-            margin=dict(l=20, r=20, t=50, b=20)
-        )
-        
-        st.plotly_chart(court_fig, use_container_width=True)
-        
-        total_shots = len(shot_df)
-        made_shots_count = len(made_shots)
-        fg_percentage = (made_shots_count / total_shots) * 100 if total_shots > 0 else 0
+    with tab1:
+        # Use the most recent season for overview stats
+        season_data = df_clean[df_clean['SEASON'] == available_seasons[0]]
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Total Shots", total_shots)
+            st.metric("Season PPG", f"{season_data['PTS'].mean():.1f}")
         with col2:
-            st.metric("Made Shots", made_shots_count)
+            st.metric("Season RPG", f"{season_data['REB'].mean():.1f}")
         with col3:
-            st.metric("Field Goal %", f"{fg_percentage:.1f}%")
-    
-    model, x_test, y_test, predictions = train_eval(df_clean)
-    
-    if model is None:
-        st.warning("Not enough data available for model training. Showing visualizations only.")
-    else:
-        st.subheader("Next Game Prediction")
+            st.metric("Season APG", f"{season_data['AST'].mean():.1f}")
         
-        try:
-            team_id = get_player_team(player_name)
-            schedule = fetch_schedule()
-            next_game = find_next_game(schedule, team_id)
+        model, x_test, y_test, predictions = train_eval(df_clean)
+        
+        if model is None:
+            st.warning("Not enough data available for model training. Showing visualizations only.")
+        else:
+            st.subheader("Next Game Prediction")
             
-            if next_game:
-                opponent = next_game['opponent_team_name']
-                st.write(f"Next Game: vs {opponent} on {next_game['game_date'].strftime('%B %d, %Y')}")
+            try:
+                team_id = get_player_team(player_name)
+                schedule = fetch_schedule()
+                next_game = find_next_game(schedule, team_id) if team_id and schedule else None
                 
-                team_stats_df = load_team_defense_data()
-                prediction = predict_against_opponent(player_name, opponent, current_season_data, model, team_stats_df)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Predicted Points", f"{prediction['Predicted PTS']:.1f}")
-                with col2:
-                    st.metric("Predicted Rebounds", f"{prediction['Predicted REB']:.1f}")
-                with col3:
-                    st.metric("Predicted Assists", f"{prediction['Predicted AST']:.1f}")
-                
-                h2h_games = current_season_data[current_season_data['MATCHUP'].str.contains(opponent, case=False)]
-                if not h2h_games.empty:
-                    st.subheader(f"Historical Performance vs {opponent}")
-                    fig_h2h = go.Figure()
-                    fig_h2h.add_trace(go.Bar(x=h2h_games['GAME_DATE'], y=h2h_games['PTS'], 
-                                           name='Points', marker_color='#FF4B4B'))
-                    fig_h2h.add_trace(go.Bar(x=h2h_games['GAME_DATE'], y=h2h_games['REB'], 
-                                           name='Rebounds', marker_color='#00CC96'))
-                    fig_h2h.add_trace(go.Bar(x=h2h_games['GAME_DATE'], y=h2h_games['AST'], 
-                                           name='Assists', marker_color='#636EFA'))
+                if not team_id:
+                    st.warning("Could not find team information for the player.")
+                elif not schedule:
+                    st.warning("Could not fetch the schedule.")
+                elif not next_game:
+                    st.warning("No upcoming games found in the schedule.")
+                else:
+                    opponent = next_game['opponent_team_name']
+                    if not opponent:
+                        st.warning("Could not determine opponent information.")
+                    else:
+                        game_date = next_game['game_date'].strftime('%B %d, %Y')
+                        location = "Home" if next_game['is_home_game'] else "Away"
+                        st.write(f"**Next Game**: {location} vs {opponent} on {game_date}")
                     
-                    fig_h2h.update_layout(
-                        title=f"{player_name}'s Performance vs {opponent}",
-                        xaxis_title="Date",
-                        yaxis_title="Stats",
-                        barmode='group',
-                        hovermode='x unified'
-                    )
-                    st.plotly_chart(fig_h2h, use_container_width=True)
-            else:
-                st.warning("No upcoming games found in the schedule.")
-        except Exception as e:
-            st.error(f"Error fetching next game information: {e}")
+                    team_stats_df = load_team_defense_data()
+                    prediction = predict_against_opponent(player_name, opponent, season_data, model, team_stats_df)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Predicted Points", f"{prediction['Predicted PTS']:.1f}", 
+                                f"{prediction['Predicted PTS'] - prediction['Season Avg PTS']:+.1f} vs season avg")
+                    with col2:
+                        st.metric("Predicted Rebounds", f"{prediction['Predicted REB']:.1f}", 
+                                f"{prediction['Predicted REB'] - prediction['Season Avg REB']:+.1f} vs season avg")
+                    with col3:
+                        st.metric("Predicted Assists", f"{prediction['Predicted AST']:.1f}", 
+                                f"{prediction['Predicted AST'] - prediction['Season Avg AST']:+.1f} vs season avg")
+            except Exception as e:
+                st.error(f"Error fetching next game information: {str(e)}")
     
+    with tab2:
+        # Add season selector directly in the Game-by-Game Performance tab
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            selected_season = st.selectbox(
+                "Select Season",
+                options=available_seasons,
+                index=0,  # Default to most recent season
+                key="season_select"
+            )
+        
+        # Filter data for selected season
+        season_data = df_clean[df_clean['SEASON'] == selected_season]
+        
+        st.subheader(f"Game-by-Game Performance - {selected_season}")
+        
+        fig_games = go.Figure()
+        
+        fig_games.add_trace(go.Scatter(
+            x=season_data['GAME_DATE'],
+            y=season_data['PTS'],
+            mode='lines+markers',
+            name='Points',
+            line=dict(width=2, color='#FF4B4B'),
+            marker=dict(size=8),
+            hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
+                        "<b>Points</b>: %{y}<br>" +
+                        "<b>Opponent</b>: %{customdata[1]}<br>" +
+                        "<b>Team</b>: %{customdata[2]}<extra></extra>",
+            customdata=np.column_stack((
+                season_data['GAME_DATE'].dt.strftime('%b %d'),
+                season_data['MATCHUP'],
+                season_data['TEAM_ABBREVIATION']
+            ))
+        ))
+        
+        fig_games.add_trace(go.Scatter(
+            x=season_data['GAME_DATE'],
+            y=season_data['REB'],
+            mode='lines+markers',
+            name='Rebounds',
+            line=dict(width=2, color='#00CC96'),
+            marker=dict(size=8),
+            hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
+                        "<b>Rebounds</b>: %{y}<br>" +
+                        "<b>Opponent</b>: %{customdata[1]}<br>" +
+                        "<b>Team</b>: %{customdata[2]}<extra></extra>",
+            customdata=np.column_stack((
+                season_data['GAME_DATE'].dt.strftime('%b %d'),
+                season_data['MATCHUP'],
+                season_data['TEAM_ABBREVIATION']
+            ))
+        ))
+        
+        fig_games.add_trace(go.Scatter(
+            x=season_data['GAME_DATE'],
+            y=season_data['AST'],
+            mode='lines+markers',
+            name='Assists',
+            line=dict(width=2, color='#636EFA'),
+            marker=dict(size=8),
+            hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
+                        "<b>Assists</b>: %{y}<br>" +
+                        "<b>Opponent</b>: %{customdata[1]}<br>" +
+                        "<b>Team</b>: %{customdata[2]}<extra></extra>",
+            customdata=np.column_stack((
+                season_data['GAME_DATE'].dt.strftime('%b %d'),
+                season_data['MATCHUP'],
+                season_data['TEAM_ABBREVIATION']
+            ))
+        ))
+        
+        # Add 5-game rolling averages
+        window = 5
+        season_data['PTS_AVG'] = season_data['PTS'].rolling(window=window, min_periods=1).mean()
+        season_data['REB_AVG'] = season_data['REB'].rolling(window=window, min_periods=1).mean()
+        season_data['AST_AVG'] = season_data['AST'].rolling(window=window, min_periods=1).mean()
+        
+        fig_games.add_trace(go.Scatter(
+            x=season_data['GAME_DATE'],
+            y=season_data['PTS_AVG'],
+            mode='lines',
+            name=f'{window}-Game PTS Avg',
+            line=dict(width=2, color='#FF4B4B', dash='dash'),
+            hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
+                        f"<b>{window}-Game PTS Avg</b>: %{{y:.1f}}<extra></extra>",
+            customdata=season_data['GAME_DATE'].dt.strftime('%b %d')
+        ))
+        
+        fig_games.add_trace(go.Scatter(
+            x=season_data['GAME_DATE'],
+            y=season_data['REB_AVG'],
+            mode='lines',
+            name=f'{window}-Game REB Avg',
+            line=dict(width=2, color='#00CC96', dash='dash'),
+            hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
+                        f"<b>{window}-Game REB Avg</b>: %{{y:.1f}}<extra></extra>",
+            customdata=season_data['GAME_DATE'].dt.strftime('%b %d')
+        ))
+        
+        fig_games.add_trace(go.Scatter(
+            x=season_data['GAME_DATE'],
+            y=season_data['AST_AVG'],
+            mode='lines',
+            name=f'{window}-Game AST Avg',
+            line=dict(width=2, color='#636EFA', dash='dash'),
+            hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
+                        f"<b>{window}-Game AST Avg</b>: %{{y:.1f}}<extra></extra>",
+            customdata=season_data['GAME_DATE'].dt.strftime('%b %d')
+        ))
+        
+        fig_games.update_layout(
+            title=f"{player_name}'s Game Log - {selected_season}",
+            xaxis_title="Date",
+            yaxis_title="Stats",
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            height=600
+        )
+        
+        st.plotly_chart(fig_games, use_container_width=True)
+        
+        # Show team changes for the selected season
+        team_changes = season_data.groupby('TEAM_ABBREVIATION').agg({
+            'GAME_DATE': ['min', 'max', 'count']
+        }).reset_index()
+        team_changes.columns = ['Team', 'First Game', 'Last Game', 'Games Played']
+        team_changes['First Game'] = team_changes['First Game'].dt.strftime('%b %d, %Y')
+        team_changes['Last Game'] = team_changes['Last Game'].dt.strftime('%b %d, %Y')
+        st.markdown("**Team Changes**")
+        st.dataframe(team_changes, hide_index=True)
+
     st.subheader("Advanced Stats Per Game")
     
-    current_season_data['GAME_DATE'] = pd.to_datetime(current_season_data['GAME_DATE'])
-    current_season_data = current_season_data.sort_values('GAME_DATE')
+    season_data['GAME_DATE'] = pd.to_datetime(season_data['GAME_DATE'])
+    season_data = season_data.sort_values('GAME_DATE')
     
-    # Calculate Game Score with full formula
-    game_score = current_season_data['PTS']
-    if 'FGM' in current_season_data.columns:
-        game_score += 0.4 * current_season_data['FGM']
-    if 'FGA' in current_season_data.columns:
-        game_score -= 0.7 * current_season_data['FGA']
-    if 'FTM' in current_season_data.columns:
-        game_score += 0.4 * current_season_data['FTM']
-    if 'FTA' in current_season_data.columns:
-        game_score -= 0.7 * current_season_data['FTA']
-    if 'OREB' in current_season_data.columns:
-        game_score += 0.7 * current_season_data['OREB']
-    if 'DREB' in current_season_data.columns:
-        game_score += 0.3 * current_season_data['DREB']
-    if 'STL' in current_season_data.columns:
-        game_score += current_season_data['STL']
-    if 'AST' in current_season_data.columns:
-        game_score += 0.7 * current_season_data['AST']
-    if 'BLK' in current_season_data.columns:
-        game_score += 0.7 * current_season_data['BLK']
-    if 'TOV' in current_season_data.columns:
-        game_score -= current_season_data['TOV']
-    if 'PF' in current_season_data.columns:
-        game_score -= 0.4 * current_season_data['PF']
+    game_score = season_data['PTS']
+    if 'FGM' in season_data.columns:
+        game_score += 0.4 * season_data['FGM']
+    if 'FGA' in season_data.columns:
+        game_score -= 0.7 * season_data['FGA']
+    if 'FTM' in season_data.columns:
+        game_score += 0.4 * season_data['FTM']
+    if 'FTA' in season_data.columns:
+        game_score -= 0.7 * season_data['FTA']
+    if 'OREB' in season_data.columns:
+        game_score += 0.7 * season_data['OREB']
+    if 'DREB' in season_data.columns:
+        game_score += 0.3 * season_data['DREB']
+    if 'STL' in season_data.columns:
+        game_score += season_data['STL']
+    if 'AST' in season_data.columns:
+        game_score += 0.7 * season_data['AST']
+    if 'BLK' in season_data.columns:
+        game_score += 0.7 * season_data['BLK']
+    if 'TOV' in season_data.columns:
+        game_score -= season_data['TOV']
+    if 'PF' in season_data.columns:
+        game_score -= 0.4 * season_data['PF']
     
-    current_season_data['GAME_SCORE'] = game_score
+    season_data['GAME_SCORE'] = game_score
     
-    # Add tooltip explaining Game Score calculation
     st.markdown("""
     <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #262730;">
         <details>
@@ -294,13 +337,11 @@ if df is not None:
     </div>
     """, unsafe_allow_html=True)
     
-    # Create figure for Game Score
     fig_advanced = go.Figure()
     
-    # Add Game Score trace
     fig_advanced.add_trace(go.Scatter(
-        x=current_season_data['GAME_DATE'],
-        y=current_season_data['GAME_SCORE'],
+        x=season_data['GAME_DATE'],
+        y=season_data['GAME_SCORE'],
         mode='lines+markers',
         name='Game Score',
         line=dict(width=2, color='#FF4B4B'),
@@ -309,28 +350,25 @@ if df is not None:
                     "<b>Game Score</b>: %{y:.1f}<br>" +
                     "<b>Opponent</b>: %{customdata[1]}<extra></extra>",
         customdata=np.column_stack((
-            current_season_data['GAME_DATE'].dt.strftime('%b %d'),
-            current_season_data['MATCHUP']
+            season_data['GAME_DATE'].dt.strftime('%b %d'),
+            season_data['MATCHUP']
         ))
     ))
     
-    # Add rolling average with proper window
     window = 5
-    current_season_data['GAME_SCORE_AVG'] = current_season_data['GAME_SCORE'].rolling(window=window, min_periods=1).mean()
+    season_data['GAME_SCORE_AVG'] = season_data['GAME_SCORE'].rolling(window=window, min_periods=1).mean()
     
-    # Add rolling average trace
     fig_advanced.add_trace(go.Scatter(
-        x=current_season_data['GAME_DATE'],
-        y=current_season_data['GAME_SCORE_AVG'],
+        x=season_data['GAME_DATE'],
+        y=season_data['GAME_SCORE_AVG'],
         mode='lines',
         name=f'{window}-Game Avg',
         line=dict(width=2, color='#636EFA', dash='dash'),
         hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
                     f"<b>{window}-Game Avg</b>: %{{y:.1f}}<extra></extra>",
-        customdata=current_season_data['GAME_DATE'].dt.strftime('%b %d')
+        customdata=season_data['GAME_DATE'].dt.strftime('%b %d')
     ))
     
-    # Update layout
     fig_advanced.update_layout(
         title=f"{player_name}'s Game Score",
         xaxis_title="Date",
@@ -353,49 +391,66 @@ if df is not None:
     
     st.plotly_chart(fig_advanced, use_container_width=True)
     
-    # Add Game Score summary
     st.subheader("Game Score Summary")
     col1, col2 = st.columns(2)
     
     with col1:
-        st.metric("Average Game Score", f"{current_season_data['GAME_SCORE'].mean():.1f}")
-        st.metric("Best Game Score", f"{current_season_data['GAME_SCORE'].max():.1f}")
+        st.metric("Average Game Score", f"{season_data['GAME_SCORE'].mean():.1f}")
+        st.metric("Best Game Score", f"{season_data['GAME_SCORE'].max():.1f}")
     
     with col2:
-        # Calculate the most recent 5-game average
-        recent_avg = current_season_data['GAME_SCORE'].tail(window).mean()
-        # Calculate the previous 5-game average for trend
-        prev_avg = current_season_data['GAME_SCORE'].tail(window*2).head(window).mean()
+        recent_avg = season_data['GAME_SCORE'].tail(window).mean()
+        prev_avg = season_data['GAME_SCORE'].tail(window*2).head(window).mean()
         trend = recent_avg - prev_avg
         
         st.metric(f"Recent {window}-Game Average", f"{recent_avg:.1f}")
         st.metric("Trend", f"{trend:+.1f}")
     
-    # Add best performance
-    best_game = current_season_data.loc[current_season_data['GAME_SCORE'].idxmax()]
+    best_game = season_data.loc[season_data['GAME_SCORE'].idxmax()]
     st.markdown(f"**Best Performance**: {best_game['GAME_DATE'].strftime('%b %d')} vs {best_game['MATCHUP'].split()[-1]}")
     st.markdown(f"Game Score: {best_game['GAME_SCORE']:.1f} | Points: {best_game['PTS']} | Rebounds: {best_game['REB']} | Assists: {best_game['AST']}")
     
     st.subheader("Game-by-Game Performance")
     
-    # Add date range selector
-    min_date = current_season_data['GAME_DATE'].min()
-    max_date = current_season_data['GAME_DATE'].max()
-    date_range = st.date_input(
-        "Select Date Range",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
+    min_date = season_data['GAME_DATE'].min()
+    max_date = season_data['GAME_DATE'].max()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        date_range = st.date_input(
+            "Select Date Range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
+    with col2:
+        # Get unique seasons from the data
+        all_seasons = sorted(df_clean['SEASON'].unique(), reverse=True)
+        if not all_seasons:  # If no seasons found, add current season
+            all_seasons = ['2024-25']
+        selected_season = st.selectbox(
+            "Select Season",
+            options=all_seasons,
+            index=0
+        )
+    
+    # Filter data based on selected season
+    filtered_data = df_clean[df_clean['SEASON'] == selected_season]
+    
+    # Get team information for the selected season
+    season_teams = filtered_data['TEAM_ABBREVIATION'].unique()
+    if len(season_teams) > 0:
+        team_info = " & ".join(season_teams)
+        st.markdown(f"**Team(s) in {selected_season}**: {team_info}")
     
     if len(date_range) == 2:
         start_date, end_date = date_range
-        filtered_data = current_season_data[
-            (current_season_data['GAME_DATE'].dt.date >= start_date) &
-            (current_season_data['GAME_DATE'].dt.date <= end_date)
+        filtered_data = filtered_data[
+            (filtered_data['GAME_DATE'].dt.date >= start_date) &
+            (filtered_data['GAME_DATE'].dt.date <= end_date)
         ]
-        
-        # Add averages for selected date range
+    
+    if not filtered_data.empty:
         st.markdown(f"**Averages for Selected Period ({start_date.strftime('%b %d')} - {end_date.strftime('%b %d')})**")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -405,7 +460,6 @@ if df is not None:
         with col3:
             st.metric("Assists", f"{filtered_data['AST'].mean():.1f}")
         
-        # Create game-by-game performance chart
         fig_games = go.Figure()
         
         fig_games.add_trace(go.Scatter(
@@ -417,10 +471,12 @@ if df is not None:
             marker=dict(size=8),
             hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
                         "<b>Points</b>: %{y}<br>" +
-                        "<b>Opponent</b>: %{customdata[1]}<extra></extra>",
+                        "<b>Opponent</b>: %{customdata[1]}<br>" +
+                        "<b>Team</b>: %{customdata[2]}<extra></extra>",
             customdata=np.column_stack((
                 filtered_data['GAME_DATE'].dt.strftime('%b %d'),
-                filtered_data['MATCHUP']
+                filtered_data['MATCHUP'],
+                filtered_data['TEAM_ABBREVIATION']
             ))
         ))
         
@@ -433,10 +489,12 @@ if df is not None:
             marker=dict(size=8),
             hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
                         "<b>Rebounds</b>: %{y}<br>" +
-                        "<b>Opponent</b>: %{customdata[1]}<extra></extra>",
+                        "<b>Opponent</b>: %{customdata[1]}<br>" +
+                        "<b>Team</b>: %{customdata[2]}<extra></extra>",
             customdata=np.column_stack((
                 filtered_data['GAME_DATE'].dt.strftime('%b %d'),
-                filtered_data['MATCHUP']
+                filtered_data['MATCHUP'],
+                filtered_data['TEAM_ABBREVIATION']
             ))
         ))
         
@@ -449,15 +507,17 @@ if df is not None:
             marker=dict(size=8),
             hovertemplate="<b>Game</b>: %{customdata[0]}<br>" +
                         "<b>Assists</b>: %{y}<br>" +
-                        "<b>Opponent</b>: %{customdata[1]}<extra></extra>",
+                        "<b>Opponent</b>: %{customdata[1]}<br>" +
+                        "<b>Team</b>: %{customdata[2]}<extra></extra>",
             customdata=np.column_stack((
                 filtered_data['GAME_DATE'].dt.strftime('%b %d'),
-                filtered_data['MATCHUP']
+                filtered_data['MATCHUP'],
+                filtered_data['TEAM_ABBREVIATION']
             ))
         ))
         
         fig_games.update_layout(
-            title=f"{player_name}'s Game Log",
+            title=f"{player_name}'s Game Log - {selected_season}",
             xaxis_title="Date",
             yaxis_title="Stats",
             hovermode='x unified',
@@ -472,19 +532,29 @@ if df is not None:
         )
         
         st.plotly_chart(fig_games, use_container_width=True)
+        
+        # Show team changes for the selected season
+        team_changes = filtered_data.groupby('TEAM_ABBREVIATION').agg({
+            'GAME_DATE': ['min', 'max', 'count']
+        }).reset_index()
+        team_changes.columns = ['Team', 'First Game', 'Last Game', 'Games Played']
+        team_changes['First Game'] = team_changes['First Game'].dt.strftime('%b %d, %Y')
+        team_changes['Last Game'] = team_changes['Last Game'].dt.strftime('%b %d, %Y')
+        st.markdown("**Team Changes**")
+        st.dataframe(team_changes, hide_index=True)
     
     if compare_player:
         st.subheader(f"Player Comparison: {player_name} vs {compare_player}")
         compare_df = load_player_data(compare_player)
         if compare_df is not None:
             compare_df_clean = clean_features(compare_df)
-            compare_season_data = compare_df_clean[compare_df_clean['SEASON'] == current_season]
+            compare_season_data = compare_df_clean[compare_df_clean['SEASON'] == selected_season]
             
             fig_compare = go.Figure()
             
             fig_compare.add_trace(go.Bar(
                 x=['Points', 'Rebounds', 'Assists'],
-                y=[current_season_data['PTS'].mean(), current_season_data['REB'].mean(), current_season_data['AST'].mean()],
+                y=[season_data['PTS'].mean(), season_data['REB'].mean(), season_data['AST'].mean()],
                 name=player_name,
                 marker_color='#FF4B4B'
             ))
