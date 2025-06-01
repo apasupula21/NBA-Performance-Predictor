@@ -142,49 +142,43 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
         return pd.DataFrame()
     
     all_logs = []
-    max_retries = 3
-    retry_delay = 5  # seconds to wait between retries
     
-    # Get all seasons between start and end
     start_year = int(start_season.split('-')[0])
     end_year = int(end_season.split('-')[0])
     seasons = [f"{year}-{str(year+1)[-2:]}" for year in range(start_year, end_year + 1)]
     
     for season in seasons:
-        for attempt in range(max_retries):
-            try:
-                print(f"Attempt {attempt + 1} to fetch game logs for {player_name} in {season}...")
-                gamelog = playergamelog.PlayerGameLog(
-                    player_id=player_id,
-                    season=season,
-                    season_type_all_star='Regular Season',
-                    timeout=60  # Increased timeout
-                )
-                
-                # Add a delay before making the request
-                time.sleep(2)
-                
-                df = gamelog.get_data_frames()[0]
-                if not df.empty and 'MATCHUP' in df.columns:
-                    df['SEASON'] = season
-                    all_logs.append(df)
-                    print(f"Successfully fetched {len(df)} games for {season}")
-                    break
-                else:
-                    print(f"Received empty or invalid data frame for {season}")
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed for {season}: {e}")
-                if attempt < max_retries - 1:
-                    print(f"Waiting {retry_delay} seconds before retrying...")
-                    time.sleep(retry_delay)
-                else:
-                    print(f"Failed to fetch {season} data after {max_retries} attempts")
+        try:
+            print(f"Fetching game logs for {player_name} in {season}...")
+            gamelog = playergamelog.PlayerGameLog(
+                player_id=player_id,
+                season=season,
+                season_type_all_star='Regular Season',
+                timeout=60
+            )
+            
+            df = gamelog.get_data_frames()[0]
+            if not df.empty and 'MATCHUP' in df.columns:
+                df['SEASON'] = season
+                all_logs.append(df)
+                print(f"Successfully fetched {len(df)} games for {season}")
+            
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"Failed to fetch {season} data: {e}")
+            continue
     
     if all_logs:
         combined_df = pd.concat(all_logs, ignore_index=True)
-        combined_df['GAME_DATE'] = pd.to_datetime(combined_df['GAME_DATE'])
+        try:
+            combined_df['GAME_DATE'] = pd.to_datetime(combined_df['GAME_DATE'], format='mixed')
+        except:
+            try:
+                combined_df['GAME_DATE'] = pd.to_datetime(combined_df['GAME_DATE'], format='%B %d, %Y')
+            except:
+                combined_df['GAME_DATE'] = pd.to_datetime(combined_df['GAME_DATE'])
+        
         combined_df = combined_df.sort_values('GAME_DATE')
         
         print(f"\nTotal games fetched: {len(combined_df)}")
@@ -198,7 +192,6 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
 def load_team_defense_data(stats_folder='team_stats', cache_duration_hours=24):
     cache_file = 'team_stats_cache.pkl'
     
-    # Check if cache exists and is recent enough
     if os.path.exists(cache_file):
         cache_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
         if datetime.now() - cache_time < timedelta(hours=cache_duration_hours):
@@ -209,7 +202,6 @@ def load_team_defense_data(stats_folder='team_stats', cache_duration_hours=24):
             except Exception as e:
                 print(f"Error loading cache: {e}")
     
-    # If no cache or cache is expired, process files
     if not os.path.exists(stats_folder):
         print(f"Creating {stats_folder} directory...")
         os.makedirs(stats_folder)
@@ -277,7 +269,6 @@ def load_team_defense_data(stats_folder='team_stats', cache_duration_hours=24):
             season_means = all_stats.groupby('SEASON')[col].transform('mean')
             all_stats[col] = all_stats[col].fillna(season_means)
     
-    # Cache the processed data
     try:
         with open(cache_file, 'wb') as f:
             pickle.dump(all_stats, f)
@@ -288,132 +279,104 @@ def load_team_defense_data(stats_folder='team_stats', cache_duration_hours=24):
     return all_stats
 
 def structure_injuries(raw_data):
-    structured = {}
-
-    if "teams" not in raw_data:
-        raise ValueError("Invalid data format: 'teams' key not found.")
-
-    for team_entry in raw_data["teams"]:
-        team_name = f"{team_entry['market']} {team_entry['name']}"
-        structured[team_name] = {}
-
-        for player in team_entry.get("players", []):
-            if "injuries" in player and player["injuries"]:
-                latest_injury = player["injuries"][-1]
-                status = latest_injury.get("status", "Unknown")
-                structured[team_name][player["full_name"]] = status
-
-    return structured
+    structured_data = {}
+    for team in raw_data.get('teams', []):
+        team_name = team.get('name', '')
+        injuries = []
+        for player in team.get('players', []):
+            if player.get('status', {}).get('id') == 'OUT':
+                injuries.append({
+                    'name': player.get('full_name', ''),
+                    'status': 'OUT',
+                    'description': player.get('status', {}).get('description', '')
+                })
+        if injuries:
+            structured_data[team_name] = injuries
+    return structured_data
 
 def get_teammate_injuries(player_name, structured_data):
-    found_team = None
-    for team_name, players_status in structured_data.items():
-        if player_name in players_status:
-            found_team = team_name
-            break
-
-    if not found_team:
-        return {}
-
-    teammate_injuries = {}
-    for teammate, status in structured_data[found_team].items():
-        if teammate != player_name:
-            teammate_injuries[teammate] = status
-
-    return teammate_injuries
+    team_id = get_player_team(player_name)
+    if not team_id:
+        return []
+    
+    team_info = teams.find_team_name_by_id(team_id)
+    if not team_info:
+        return []
+    
+    team_name = team_info.get('full_name', '')
+    return structured_data.get(team_name, [])
 
 def print_cached_rosters():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
             data = json.load(f)
-            print(f"Cache timestamp: {datetime.datetime.fromtimestamp(data['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
             print("\nCached rosters:")
-            for player, team_id in data['rosters'].items():
-                print(f"{player}: {team_id}")
-    else:
-        print("No cache file found.")
+            for player, team_id in data["rosters"].items():
+                team_info = teams.find_team_name_by_id(team_id)
+                team_name = team_info.get('full_name', 'Unknown Team') if team_info else 'Unknown Team'
+                print(f"{player}: {team_name}")
 
 def get_player_game_dates(player_name, season='2023-24'):
-    df = get_all_game_logs(player_name, season, season)
-    return df['GAME_DATE'].tolist() if not df.empty else []
+    return get_all_game_logs(player_name, season, season)['GAME_DATE'].tolist()
 
 def build_availability_table(target_player, teammates, season='2023-24'):
     target_dates = get_player_game_dates(target_player, season)
-    availability = {teammate: [] for teammate in teammates}
-    
-    for teammate in teammates:
-        teammate_dates = get_player_game_dates(teammate, season)
-        for date in target_dates:
-            availability[teammate].append(date in teammate_dates)
-    
-    return pd.DataFrame(availability, index=target_dates)
+    availability = {teammate: get_player_game_dates(teammate, season) for teammate in teammates}
+    return target_dates, availability
 
 def get_head_to_head_stats(player_name, opponent_team, season='2024-25', max_retries=3):
-    # Create a cache key based on player and opponent
     cache_key = f"{player_name}_{opponent_team}_{season}"
     cache_file = f'head_to_head_cache_{cache_key}.pkl'
     
-    # Try to load from cache first
     if os.path.exists(cache_file):
         try:
             with open(cache_file, 'rb') as f:
-                print(f"Loading head-to-head stats from cache for {player_name} vs {opponent_team}")
                 return pickle.load(f)
         except Exception as e:
             print(f"Error loading head-to-head cache: {e}")
     
-    # If not in cache, try to get from existing game logs
     try:
         player_id = get_player_id(player_name)
         if not player_id:
             return None
             
-        # Get all game logs for the player
         all_logs = get_all_game_logs(player_name, season, season)
         if all_logs.empty:
             return None
             
-        # Filter for games against the opponent
         opponent_name = opponent_team['full_name'] if isinstance(opponent_team, dict) else opponent_team
         h2h_games = all_logs[all_logs['MATCHUP'].str.contains(opponent_name, case=False)]
         if h2h_games.empty:
             return None
             
-        # Calculate stats
         stats = {
             'games_played': len(h2h_games),
             'avg_pts': h2h_games['PTS'].mean(),
             'avg_reb': h2h_games['REB'].mean(),
             'avg_ast': h2h_games['AST'].mean(),
-            'avg_fg_pct': h2h_games['FG_PCT'].mean(),
-            'last_game_pts': h2h_games['PTS'].iloc[-1] if len(h2h_games) > 0 else None,
-            'last_game_reb': h2h_games['REB'].iloc[-1] if len(h2h_games) > 0 else None,
-            'last_game_ast': h2h_games['AST'].iloc[-1] if len(h2h_games) > 0 else None
+            'avg_fg_pct': h2h_games['FG_PCT'].mean() if 'FG_PCT' in h2h_games.columns else None,
+            'last_game_pts': h2h_games['PTS'].iloc[-1] if not h2h_games.empty else None,
+            'last_game_reb': h2h_games['REB'].iloc[-1] if not h2h_games.empty else None,
+            'last_game_ast': h2h_games['AST'].iloc[-1] if not h2h_games.empty else None
         }
         
-        # Cache the results
         try:
             with open(cache_file, 'wb') as f:
                 pickle.dump(stats, f)
-            print(f"Cached head-to-head stats for {player_name} vs {opponent_name}")
         except Exception as e:
             print(f"Error caching head-to-head stats: {e}")
-            
-        return stats
         
+        return stats
     except Exception as e:
-        print(f"Error calculating head-to-head stats: {e}")
+        print(f"Error getting head-to-head stats: {e}")
         return None
 
 def get_team_defensive_stats(team_name, season='2024-25'):
     try:
-        print(f"Loading team defense data for {team_name}...")
         team_stats_df = load_team_defense_data()
         if team_stats_df.empty:
-            print("Error: No team defense data available")
             return None
             
-        # Convert team abbreviation to full name if needed
         team_abbrev_to_full = {
             'ATL': 'Atlanta Hawks', 'BOS': 'Boston Celtics', 'BKN': 'Brooklyn Nets',
             'CHA': 'Charlotte Hornets', 'CHI': 'Chicago Bulls', 'CLE': 'Cleveland Cavaliers',
@@ -427,25 +390,18 @@ def get_team_defensive_stats(team_name, season='2024-25'):
             'TOR': 'Toronto Raptors', 'UTA': 'Utah Jazz', 'WAS': 'Washington Wizards'
         }
         
-        # Check if input is an abbreviation and convert to full name
         if team_name in team_abbrev_to_full:
             team_name = team_abbrev_to_full[team_name]
             print(f"Converted team abbreviation to full name: {team_name}")
         
-        # Print available teams for debugging
         print(f"Available teams: {team_stats_df['TEAM'].unique()}")
         
-        team_stats = team_stats_df[
-            (team_stats_df['TEAM'].str.contains(team_name, case=False)) & 
-            (team_stats_df['SEASON'] == season)
-        ]
-        
+        team_stats = team_stats_df[team_stats_df['TEAM'] == team_name]
         if team_stats.empty:
-            print(f"Error: No stats found for {team_name} in {season}")
-            print(f"Available seasons: {team_stats_df['SEASON'].unique()}")
+            print(f"No stats found for team: {team_name}")
             return None
         
-        stats = {
+        return {
             'def_rtg': team_stats['DEF_RTG'].iloc[0],
             'pace': team_stats['PACE'].iloc[0],
             'efg_pct': team_stats['EFG_PCT'].iloc[0],
@@ -453,283 +409,180 @@ def get_team_defensive_stats(team_name, season='2024-25'):
             'oreb_pct': team_stats['OREB_PCT'].iloc[0],
             'ft_rate': team_stats['FT_RATE'].iloc[0]
         }
-        
-        print(f"Successfully loaded stats for {team_name}: {stats}")
-        return stats
     except Exception as e:
-        print(f"Error in get_team_defensive_stats: {str(e)}")
+        print(f"Error getting team defensive stats: {e}")
         return None
 
 def fetch_schedule(cache_duration_hours=24):
     cache_file = 'schedule_cache.pkl'
     
-    # Check if cache exists and is recent enough
     if os.path.exists(cache_file):
         try:
             cache_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
             if datetime.now() - cache_time < timedelta(hours=cache_duration_hours):
-                try:
-                    with open(cache_file, 'rb') as f:
-                        print("Loading schedule from cache...")
-                        cached_data = pickle.load(f)
-                        if isinstance(cached_data, list) and len(cached_data) > 0:
-                            print(f"Successfully loaded {len(cached_data)} games from cache")
-                            return cached_data
-                        else:
-                            print("Cache file exists but contains invalid data. Deleting cache file...")
-                            os.remove(cache_file)
-                except Exception as e:
-                    print(f"Error loading schedule cache: {e}")
-                    print("Deleting corrupted cache file...")
-                    os.remove(cache_file)
+                with open(cache_file, 'rb') as f:
+                    return pickle.load(f)
         except Exception as e:
-            print(f"Error checking cache file: {e}")
-            print("Deleting corrupted cache file...")
-            os.remove(cache_file)
+            print(f"Error loading schedule cache: {e}")
     
     print("Fetching new schedule...")
     try:
-        # Get current date
         current_date = datetime.now()
-        
-        # Initialize schedule list
         schedule = []
         
-        # Get scoreboard for the next 7 days
         for i in range(7):
             target_date = current_date + timedelta(days=i)
             try:
                 scoreboard = scoreboardv2.ScoreboardV2(
                     game_date=target_date.strftime('%m/%d/%Y'),
                     league_id='00',
-                    day_offset='0',
-                    timeout=30
+                    day_offset=0
                 )
                 
                 games = scoreboard.get_data_frames()[0]
                 if not games.empty:
                     for _, game in games.iterrows():
-                        home_team_id = game['HOME_TEAM_ID']
-                        away_team_id = game['VISITOR_TEAM_ID']
-                        
-                        home_team = teams.find_team_name_by_id(home_team_id)
-                        away_team = teams.find_team_name_by_id(away_team_id)
-                        
-                        if home_team and away_team:
-                            schedule.append({
-                                'game_date': target_date,
-                                'home_team_name': home_team,
-                                'away_team_name': away_team,
-                                'home_team_id': home_team_id,
-                                'away_team_id': away_team_id
-                            })
+                        schedule.append({
+                            'game_date': target_date,
+                            'home_team_id': game['HOME_TEAM_ID'],
+                            'away_team_id': game['VISITOR_TEAM_ID'],
+                            'home_team_name': game['HOME_TEAM_NAME'],
+                            'away_team_name': game['VISITOR_TEAM_NAME']
+                        })
                 
-                time.sleep(1)  # Rate limiting
+                time.sleep(1)
             except Exception as e:
                 print(f"Error fetching games for {target_date.strftime('%Y-%m-%d')}: {e}")
                 continue
         
         if not schedule:
-            print("No games found in the schedule")
+            print("No games found in schedule")
             return []
         
-        # Remove duplicates and sort by date
         schedule = list({(game['game_date'], game['home_team_id'], game['away_team_id']): game 
                         for game in schedule}.values())
         schedule.sort(key=lambda x: x['game_date'])
         
-        # Cache the results
         try:
             with open(cache_file, 'wb') as f:
                 pickle.dump(schedule, f)
-            print(f"Successfully cached {len(schedule)} games")
         except Exception as e:
             print(f"Error caching schedule: {e}")
         
         return schedule
-        
     except Exception as e:
         print(f"Error fetching schedule: {e}")
         return []
 
 def get_team_id(team_name):
     team_dict = teams.find_teams_by_full_name(team_name)
-    if team_dict:
-        return team_dict[0]['id']
-    return None
+    return team_dict[0]['id'] if team_dict else None
 
 def get_team_abbreviation(team_name):
-    team_abbrevs = {
-        'Atlanta Hawks': 'ATL',
-        'Boston Celtics': 'BOS',
-        'Brooklyn Nets': 'BKN',
-        'Charlotte Hornets': 'CHA',
-        'Chicago Bulls': 'CHI',
-        'Cleveland Cavaliers': 'CLE',
-        'Dallas Mavericks': 'DAL',
-        'Denver Nuggets': 'DEN',
-        'Detroit Pistons': 'DET',
-        'Golden State Warriors': 'GSW',
-        'Houston Rockets': 'HOU',
-        'Indiana Pacers': 'IND',
-        'LA Clippers': 'LAC',
-        'Los Angeles Lakers': 'LAL',
-        'Memphis Grizzlies': 'MEM',
-        'Miami Heat': 'MIA',
-        'Milwaukee Bucks': 'MIL',
-        'Minnesota Timberwolves': 'MIN',
-        'New Orleans Pelicans': 'NOP',
-        'New York Knicks': 'NYK',
-        'Oklahoma City Thunder': 'OKC',
-        'Orlando Magic': 'ORL',
-        'Philadelphia 76ers': 'PHI',
-        'Phoenix Suns': 'PHX',
-        'Portland Trail Blazers': 'POR',
-        'Sacramento Kings': 'SAC',
-        'San Antonio Spurs': 'SAS',
-        'Toronto Raptors': 'TOR',
-        'Utah Jazz': 'UTA',
-        'Washington Wizards': 'WAS'
-    }
-    return team_abbrevs.get(team_name, team_name)
+    team_dict = teams.find_teams_by_full_name(team_name)
+    return team_dict[0]['abbreviation'] if team_dict else None
 
 def clean_features(df, player_name):
-    if df.empty:
-        return df
-    
-    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-    df['SEASON'] = df['SEASON'].fillna('2024-25')
-    
-    numeric_cols = ['MIN', 'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT', 
-                   'FTM', 'FTA', 'FT_PCT', 'OREB', 'DREB', 'REB', 'AST', 
-                   'STL', 'BLK', 'TOV', 'PF', 'PTS', 'PLUS_MINUS']
-    
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    df['HOME_GAME'] = df['MATCHUP'].str.contains('vs.')
-    
     def extract_opponent(matchup):
-        if pd.isna(matchup):
-            return None
-        if 'vs.' in matchup:
-            return matchup.split('vs.')[1].strip().split()[0]
-        elif '@' in matchup:
-            return matchup.split('@')[1].strip().split()[0]
+        if isinstance(matchup, str):
+            if ' vs. ' in matchup:
+                return matchup.split(' vs. ')[1]
+            elif ' @ ' in matchup:
+                return matchup.split(' @ ')[1]
         return None
-    
-    df['OPPONENT'] = df['MATCHUP'].apply(extract_opponent)
-    
+
     def extract_team(matchup):
-        if pd.isna(matchup):
-            return None
-        if 'vs.' in matchup:
-            return matchup.split('vs.')[0].strip()
-        elif '@' in matchup:
-            return matchup.split('@')[0].strip()
+        if isinstance(matchup, str):
+            if ' vs. ' in matchup:
+                return matchup.split(' vs. ')[0]
+            elif ' @ ' in matchup:
+                return matchup.split(' @ ')[0]
         return None
+
+    df_clean = df.copy()
     
-    df['TEAM'] = df['MATCHUP'].apply(extract_team)
-    df['TEAM_ABBREVIATION'] = df['TEAM'].apply(get_team_abbreviation)
+    df_clean['HOME_GAME'] = df_clean['MATCHUP'].str.contains(' vs. ')
+    df_clean['OPPONENT'] = df_clean['MATCHUP'].apply(extract_opponent)
+    df_clean['TEAM_ABBREVIATION'] = df_clean['MATCHUP'].apply(extract_team)
     
-    df['GAME_NUMBER'] = df.groupby('SEASON').cumcount() + 1
+    df_clean['GAME_DATE'] = pd.to_datetime(df_clean['GAME_DATE'])
+    df_clean['DAYS_REST'] = df_clean['GAME_DATE'].diff().dt.days.fillna(3)
+    df_clean['GAME_NUMBER'] = range(1, len(df_clean) + 1)
     
-    df['LAST_5_GAMES_PTS'] = df.groupby('SEASON')['PTS'].transform(lambda x: x.rolling(5, min_periods=1).mean())
-    df['LAST_5_GAMES_REB'] = df.groupby('SEASON')['REB'].transform(lambda x: x.rolling(5, min_periods=1).mean())
-    df['LAST_5_GAMES_AST'] = df.groupby('SEASON')['AST'].transform(lambda x: x.rolling(5, min_periods=1).mean())
+    for stat in ['PTS', 'REB', 'AST']:
+        df_clean[f'LAST_5_GAMES_{stat}'] = df_clean[stat].rolling(window=5, min_periods=1).mean()
     
-    df['DAYS_REST'] = df['GAME_DATE'].diff().dt.days.fillna(0)
-    
-    return df
+    return df_clean
 
 def train_eval(df):
     if df.empty:
+        print("No data available for training")
         return None, None, None, None
         
-    # Define all required features in the correct order
     required_features = [
         'HOME_GAME', 'DAYS_REST', 'GAME_NUMBER', 
         'LAST_5_GAMES_PTS', 'LAST_5_GAMES_REB', 'LAST_5_GAMES_AST',
-        'OPP_DEF_RTG', 'OPP_PACE', 'OPP_EFG_PCT', 'OPP_TOV_PCT', 
-        'OPP_OREB_PCT', 'OPP_FT_RATE',
-        'H2H_GAMES_PLAYED', 'H2H_AVG_PTS', 'H2H_AVG_REB', 'H2H_AVG_AST',
-        'H2H_AVG_FG_PCT', 'H2H_LAST_GAME_PTS', 'H2H_LAST_GAME_REB', 'H2H_LAST_GAME_AST'
+        'OPP_DEF_RTG', 'OPP_PACE', 'OPP_EFG_PCT', 'OPP_TOV_PCT', 'OPP_OREB_PCT', 'OPP_FT_RATE',
+        'H2H_GAMES_PLAYED', 'H2H_AVG_PTS', 'H2H_AVG_REB', 'H2H_AVG_AST'
     ]
     
-    # Ensure all required features exist in the DataFrame
     for feature in required_features:
         if feature not in df.columns:
-            df[feature] = 0  # Initialize missing features with 0
+            df[feature] = 0
     
-    # Select only the required features in the correct order
     X = df[required_features].fillna(0)
     y = df[['PTS', 'REB', 'AST']]
     
-    # Scale features
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
     
-    # Use Ridge Regression
     model = MultiOutputRegressor(Ridge(
-        alpha=1.0,  # Regularization strength
+        alpha=1.0,
         fit_intercept=True,
         random_state=42
     ))
     
     model.fit(X_train, y_train)
-    
     predictions = model.predict(X_test)
     
-    # Calculate and print evaluation metrics
     mae = mean_absolute_error(y_test, predictions, multioutput='raw_values')
     r2 = r2_score(y_test, predictions, multioutput='raw_values')
     
-    print(f"MAE: {mae}")
+    print(f"Mean Absolute Error: {mae}")
     print(f"R2 Score: {r2}")
     
-    # Store the scaler and feature names with the model for later use
     model.scaler = scaler
     model.feature_names = required_features
     
     return model, X_test, y_test, predictions
 
 def get_team_def_rtg_by_name(opponent_name, season, team_stats_df):
-    opponent_stats = team_stats_df[
-        (team_stats_df['TEAM'].str.contains(opponent_name, case=False)) & 
-        (team_stats_df['SEASON'] == season)
-    ]
-    if not opponent_stats.empty:
-        return opponent_stats['DEF_RTG'].iloc[0]
+    team_stats = team_stats_df[team_stats_df['TEAM'] == opponent_name]
+    if not team_stats.empty:
+        return team_stats['DEF_RTG'].iloc[0]
     return None
 
 def predict_against_opponent(player_name, opponent_name, df_clean, model, team_stats_df):
     if model is None:
         return None
     
-    last_game = df_clean.iloc[-1]
-    season = last_game['SEASON']
-    
-    opponent_stats = get_team_defensive_stats(opponent_name, season)
-    h2h_stats = get_head_to_head_stats(player_name, opponent_name, season)
-    
-    if not opponent_stats:
-        return None
-    
-    # Initialize features dictionary with default values
     features = {feature: [0] for feature in model.feature_names}
     
-    # Set base features
     features['HOME_GAME'] = [True]
     features['DAYS_REST'] = [3]
-    features['GAME_NUMBER'] = [last_game['GAME_NUMBER'] + 1]
+    features['GAME_NUMBER'] = [len(df_clean) + 1]
+    
+    last_game = df_clean.iloc[-1]
     features['LAST_5_GAMES_PTS'] = [last_game['LAST_5_GAMES_PTS']]
     features['LAST_5_GAMES_REB'] = [last_game['LAST_5_GAMES_REB']]
     features['LAST_5_GAMES_AST'] = [last_game['LAST_5_GAMES_AST']]
     
-    # Set opponent stats
+    opponent_stats = get_team_defensive_stats(opponent_name)
+    if not opponent_stats:
+        return None
+    
     features['OPP_DEF_RTG'] = [opponent_stats['def_rtg']]
     features['OPP_PACE'] = [opponent_stats['pace']]
     features['OPP_EFG_PCT'] = [opponent_stats['efg_pct']]
@@ -737,135 +590,119 @@ def predict_against_opponent(player_name, opponent_name, df_clean, model, team_s
     features['OPP_OREB_PCT'] = [opponent_stats['oreb_pct']]
     features['OPP_FT_RATE'] = [opponent_stats['ft_rate']]
     
-    # Set head-to-head stats with defaults from last game
     h2h_defaults = {
         'H2H_GAMES_PLAYED': 0,
-        'H2H_AVG_PTS': last_game['PTS'],
-        'H2H_AVG_REB': last_game['REB'],
-        'H2H_AVG_AST': last_game['AST'],
-        'H2H_AVG_FG_PCT': last_game['FG_PCT'],
-        'H2H_LAST_GAME_PTS': last_game['PTS'],
-        'H2H_LAST_GAME_REB': last_game['REB'],
-        'H2H_LAST_GAME_AST': last_game['AST']
+        'H2H_AVG_PTS': df_clean['PTS'].mean(),
+        'H2H_AVG_REB': df_clean['REB'].mean(),
+        'H2H_AVG_AST': df_clean['AST'].mean()
     }
     
-    # Update with actual h2h stats if available
+    h2h_stats = get_head_to_head_stats(player_name, opponent_name)
     if h2h_stats:
         for key in h2h_defaults:
             if key in h2h_stats:
                 h2h_defaults[key] = h2h_stats[key]
     
-    # Update features with h2h stats
     for key, value in h2h_defaults.items():
         features[key] = [value]
     
-    # Create DataFrame with features in the correct order
     features_df = pd.DataFrame(features)[model.feature_names]
-    
-    # Scale the features using the stored scaler
     features_scaled = model.scaler.transform(features_df)
-    
-    # Get the prediction
     prediction = model.predict(features_scaled)
     
-    # Get season averages for comparison
     season_avg_pts = df_clean['PTS'].mean()
     season_avg_reb = df_clean['REB'].mean()
     season_avg_ast = df_clean['AST'].mean()
     
-    # Apply a weighted average between prediction and season average
-    weight = 0.7  # Weight for season average
+    weight = 0.7
     predicted_pts = weight * season_avg_pts + (1 - weight) * prediction[0][0]
     predicted_reb = weight * season_avg_reb + (1 - weight) * prediction[0][1]
     predicted_ast = weight * season_avg_ast + (1 - weight) * prediction[0][2]
     
     return {
-        'Predicted PTS': round(predicted_pts, 1),
-        'Predicted REB': round(predicted_reb, 1),
-        'Predicted AST': round(predicted_ast, 1),
-        'Season Avg PTS': round(season_avg_pts, 1),
-        'Season Avg REB': round(season_avg_reb, 1),
-        'Season Avg AST': round(season_avg_ast, 1)
+        'Predicted PTS': predicted_pts,
+        'Predicted REB': predicted_reb,
+        'Predicted AST': predicted_ast,
+        'Season Avg PTS': season_avg_pts,
+        'Season Avg REB': season_avg_reb,
+        'Season Avg AST': season_avg_ast
     }
 
 def filter_games_without_all_teammates(df, absent_teammates, season='2024-25'):
     if not absent_teammates:
         return df
     
-    season_data = df[df['SEASON'] == season]
-    if season_data.empty:
-        return df
+    filtered_df = df.copy()
+    for teammate in absent_teammates:
+        teammate_id = get_player_id(teammate)
+        if teammate_id:
+            teammate_games = get_all_game_logs(teammate, season, season)
+            if not teammate_games.empty:
+                teammate_dates = set(teammate_games['GAME_DATE'])
+                filtered_df = filtered_df[filtered_df['GAME_DATE'].isin(teammate_dates)]
     
-    filtered_games = []
-    for _, game in season_data.iterrows():
-        game_date = game['GAME_DATE']
-        all_teammates_present = True
-        
-        for teammate in absent_teammates:
-            teammate_games = get_player_game_dates(teammate, season)
-            if game_date not in teammate_games:
-                all_teammates_present = False
-                break
-        
-        if all_teammates_present:
-            filtered_games.append(game)
-    
-    if filtered_games:
-        return pd.DataFrame(filtered_games)
-    return df
+    return filtered_df
 
 def find_next_game(schedule, team_id):
     if not schedule or not team_id:
         return None
     
     current_date = datetime.now()
+    
     for game in schedule:
-        if not game or 'game_date' not in game:
-            continue
-            
         game_date = game['game_date']
         if game_date > current_date and (game['home_team_id'] == team_id or game['away_team_id'] == team_id):
-            # Get team information
             home_team_info = teams.find_team_name_by_id(game['home_team_id'])
             away_team_info = teams.find_team_name_by_id(game['away_team_id'])
             
             if not home_team_info or not away_team_info:
                 continue
                 
-            # Extract abbreviations
             home_abbr = home_team_info.get('abbreviation', '') if isinstance(home_team_info, dict) else home_team_info
             away_abbr = away_team_info.get('abbreviation', '') if isinstance(away_team_info, dict) else away_team_info
             
             if not home_abbr or not away_abbr:
                 continue
                 
-            # Determine opponent and game location
             if game['home_team_id'] == team_id:
                 opponent_abbr = away_abbr
                 is_home_game = True
             else:
                 opponent_abbr = home_abbr
                 is_home_game = False
-                
+            
             return {
                 'game_date': game_date,
-                'opponent_team_name': opponent_abbr,
+                'opponent_team_name': TEAM_ABBREV_TO_FULL.get(opponent_abbr, opponent_abbr),
                 'is_home_game': is_home_game
             }
+    
     return None
 
 def get_team_abbrev_from_logs_or_cache(player_id):
     try:
-        player_info = commonplayerinfo.CommonPlayerInfo(player_id=player_id).get_data_frames()[0]
-        team_abbrev = player_info['TEAM_ABBREVIATION'].iloc[0]
-        return team_abbrev
-    except Exception as e:
-        print(f"Error getting team abbreviation: {e}")
-        return None
+        gamelog = playergamelog.PlayerGameLog(
+            player_id=player_id,
+            season='2024-25',
+            season_type_all_star='Regular Season'
+        )
+        df = gamelog.get_data_frames()[0]
+        if not df.empty and 'TEAM_ABBREVIATION' in df.columns:
+            return df['TEAM_ABBREVIATION'].iloc[0]
+    except:
+        pass
+    return None
 
 def get_out_teammates(player_name, structured_data):
-    teammate_injuries = get_teammate_injuries(player_name, structured_data)
-    out_teammates = [teammate for teammate, status in teammate_injuries.items() 
-                    if status.lower() in ['out', 'doubtful']]
-    return out_teammates
+    team_id = get_player_team(player_name)
+    if not team_id:
+        return []
+    
+    team_info = teams.find_team_name_by_id(team_id)
+    if not team_info:
+        return []
+    
+    team_name = team_info.get('full_name', '')
+    injuries = structured_data.get(team_name, [])
+    return [injury['name'] for injury in injuries]
 
