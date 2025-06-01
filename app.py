@@ -104,90 +104,208 @@ if df is not None:
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Next Game & Matchup", "Game-by-Game Performance", "Shot Distance Analysis", "Player Comparison"])
     
-    with tab1:
-        season_data = df_clean[df_clean['SEASON'] == available_seasons[0]]
-        
-        st.subheader("Season Averages")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Points", f"{season_data['PTS'].mean():.1f}")
-        with col2:
-            st.metric("Rebounds", f"{season_data['REB'].mean():.1f}")
-        with col3:
-            st.metric("Assists", f"{season_data['AST'].mean():.1f}")
-        with col4:
-            st.metric("Minutes", f"{season_data['MIN'].mean():.1f}")
-        
-        st.subheader("Shooting Efficiency")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            if 'FGM' in season_data.columns and 'FGA' in season_data.columns:
-                fg_pct = (season_data['FGM'].sum() / season_data['FGA'].sum() * 100)
-                st.metric("Field Goal %", f"{fg_pct:.1f}%")
-        with col2:
-            if 'FG3M' in season_data.columns and 'FG3A' in season_data.columns:
-                three_pct = (season_data['FG3M'].sum() / season_data['FG3A'].sum() * 100)
-                st.metric("3-Point %", f"{three_pct:.1f}%")
-        with col3:
-            if 'FTM' in season_data.columns and 'FTA' in season_data.columns:
-                ft_pct = (season_data['FTM'].sum() / season_data['FTA'].sum() * 100)
-                st.metric("Free Throw %", f"{ft_pct:.1f}%")
-        with col4:
-            if 'FGM' in season_data.columns and 'FGA' in season_data.columns:
-                efg_pct = ((season_data['FGM'].sum() + 0.5 * season_data['FG3M'].sum()) / season_data['FGA'].sum() * 100)
-                st.metric("Effective FG%", f"{efg_pct:.1f}%")
-        
-        st.subheader("Advanced Stats")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            if 'TOV' in season_data.columns:
-                st.metric("Turnovers", f"{season_data['TOV'].mean():.1f}")
-        with col2:
-            if 'STL' in season_data.columns:
-                st.metric("Steals", f"{season_data['STL'].mean():.1f}")
-        with col3:
-            if 'BLK' in season_data.columns:
-                st.metric("Blocks", f"{season_data['BLK'].mean():.1f}")
-        with col4:
-            if 'PF' in season_data.columns:
-                st.metric("Fouls", f"{season_data['PF'].mean():.1f}")
-        
-        st.subheader("Usage & Impact")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            if 'FGA' in season_data.columns and 'MIN' in season_data.columns:
-                possessions = season_data['FGA'].sum() + 0.44 * season_data['FTA'].sum() + season_data['TOV'].sum()
-                minutes = season_data['MIN'].sum()
-                possessions_per_game = (minutes / 48) * 100
-                usg_rate = (possessions / possessions_per_game) * 100
-                st.metric("Usage Rate", f"{usg_rate:.1f}%")
-        with col2:
-            if 'PLUS_MINUS' in season_data.columns:
-                plus_minus = season_data['PLUS_MINUS'].mean()
-                plus_minus_str = f"{plus_minus:+.1f}" if plus_minus != 0 else "0.0"
-                st.metric("Plus/Minus", plus_minus_str)
-        with col3:
-            if 'PTS' in season_data.columns and 'FGA' in season_data.columns and 'FTA' in season_data.columns:
-                ts_pct = season_data['PTS'].sum() / (2 * (season_data['FGA'].sum() + 0.44 * season_data['FTA'].sum())) * 100
-                st.metric("True Shooting %", f"{ts_pct:.1f}%")
-        with col4:
-            if 'AST' in season_data.columns and 'TOV' in season_data.columns:
-                ast_to = season_data['AST'].sum() / season_data['TOV'].sum() if season_data['TOV'].sum() > 0 else 0
-                st.metric("AST/TO Ratio", f"{ast_to:.1f}")
-        
-        st.markdown("""
-        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #262730;">
-            <details>
-                <summary style="color: #262730; font-weight: bold;">Advanced Stats Explanation</summary>
-                <ul style="color: #262730;">
-                    <li><b>Usage Rate</b>: Estimates the percentage of team plays used by a player while on the floor</li>
-                    <li><b>True Shooting %</b>: A measure of shooting efficiency that takes into account field goals, 3-point field goals, and free throws</li>
-                    <li><b>Effective FG%</b>: Adjusts field goal percentage to account for the fact that 3-pointers are worth more than 2-pointers</li>
-                    <li><b>AST/TO Ratio</b>: Measures a player's ability to create assists while limiting turnovers</li>
-                </ul>
-            </details>
-        </div>
-        """, unsafe_allow_html=True)
+    # Store the active tab in session state
+    if 'active_tab' not in st.session_state:
+        st.session_state.active_tab = "Overview"
+    
+    # Update active tab based on user selection
+    if tab1:
+        st.session_state.active_tab = "Overview"
+    elif tab2:
+        st.session_state.active_tab = "Next Game & Matchup"
+    elif tab3:
+        st.session_state.active_tab = "Game-by-Game Performance"
+    elif tab4:
+        st.session_state.active_tab = "Shot Distance Analysis"
+    elif tab5:
+        st.session_state.active_tab = "Player Comparison"
+    
+    # Show content based on active tab
+    if st.session_state.active_tab == "Overview":
+        with tab1:
+            season_data = df_clean[df_clean['SEASON'] == available_seasons[0]]
+            
+            st.subheader("Season Averages")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Points", f"{season_data['PTS'].mean():.1f}")
+            with col2:
+                st.metric("Rebounds", f"{season_data['REB'].mean():.1f}")
+            with col3:
+                st.metric("Assists", f"{season_data['AST'].mean():.1f}")
+            with col4:
+                st.metric("Minutes", f"{season_data['MIN'].mean():.1f}")
+            
+            st.subheader("Shooting Efficiency")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                if 'FGM' in season_data.columns and 'FGA' in season_data.columns:
+                    fg_pct = (season_data['FGM'].sum() / season_data['FGA'].sum() * 100)
+                    st.metric("Field Goal %", f"{fg_pct:.1f}%")
+            with col2:
+                if 'FG3M' in season_data.columns and 'FG3A' in season_data.columns:
+                    three_pct = (season_data['FG3M'].sum() / season_data['FG3A'].sum() * 100)
+                    st.metric("3-Point %", f"{three_pct:.1f}%")
+            with col3:
+                if 'FTM' in season_data.columns and 'FTA' in season_data.columns:
+                    ft_pct = (season_data['FTM'].sum() / season_data['FTA'].sum() * 100)
+                    st.metric("Free Throw %", f"{ft_pct:.1f}%")
+            with col4:
+                if 'FGM' in season_data.columns and 'FGA' in season_data.columns:
+                    efg_pct = ((season_data['FGM'].sum() + 0.5 * season_data['FG3M'].sum()) / season_data['FGA'].sum() * 100)
+                    st.metric("Effective FG%", f"{efg_pct:.1f}%")
+            
+            st.subheader("Advanced Stats")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                if 'TOV' in season_data.columns:
+                    st.metric("Turnovers", f"{season_data['TOV'].mean():.1f}")
+            with col2:
+                if 'STL' in season_data.columns:
+                    st.metric("Steals", f"{season_data['STL'].mean():.1f}")
+            with col3:
+                if 'BLK' in season_data.columns:
+                    st.metric("Blocks", f"{season_data['BLK'].mean():.1f}")
+            with col4:
+                if 'PF' in season_data.columns:
+                    st.metric("Fouls", f"{season_data['PF'].mean():.1f}")
+            
+            st.subheader("Advanced Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            # Calculate PER (corrected formula)
+            with col1:
+                if all(col in season_data.columns for col in ['PTS', 'FGM', 'FGA', 'FTM', 'FTA', 'OREB', 'DREB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'MIN']):
+                    # PER calculation (simplified version)
+                    per = (season_data['PTS'].mean() * 1.0 + 
+                          season_data['FGM'].mean() * 0.5 - 
+                          season_data['FGA'].mean() * 0.5 + 
+                          season_data['FTM'].mean() * 0.5 - 
+                          season_data['FTA'].mean() * 0.5 + 
+                          season_data['OREB'].mean() * 0.5 + 
+                          season_data['DREB'].mean() * 0.5 + 
+                          season_data['AST'].mean() * 0.5 + 
+                          season_data['STL'].mean() * 1.0 + 
+                          season_data['BLK'].mean() * 1.0 - 
+                          season_data['TOV'].mean() * 1.0 - 
+                          season_data['PF'].mean() * 0.5)
+                    st.metric("PER", f"{per:.1f}")
+            
+            # Calculate Usage Rate
+            with col2:
+                if all(col in season_data.columns for col in ['FGA', 'FTA', 'TOV', 'MIN']):
+                    possessions = season_data['FGA'].sum() + 0.44 * season_data['FTA'].sum() + season_data['TOV'].sum()
+                    minutes = season_data['MIN'].sum()
+                    if minutes > 0:
+                        possessions_per_game = (minutes / 48) * 100
+                        usg_rate = (possessions / possessions_per_game) * 100
+                        st.metric("Usage Rate", f"{usg_rate:.1f}%")
+            
+            # Calculate True Shooting %
+            with col3:
+                if all(col in season_data.columns for col in ['PTS', 'FGA', 'FTA']):
+                    fga_fta = season_data['FGA'].sum() + 0.44 * season_data['FTA'].sum()
+                    if fga_fta > 0:
+                        ts_pct = season_data['PTS'].sum() / (2 * fga_fta) * 100
+                        st.metric("True Shooting %", f"{ts_pct:.1f}%")
+            
+            # Calculate Box Plus/Minus
+            with col4:
+                if all(col in season_data.columns for col in ['PTS', 'AST', 'REB', 'STL', 'BLK', 'TOV', 'PF']):
+                    # Simplified BPM calculation
+                    bpm = (season_data['PTS'].mean() * 0.274 + 
+                          season_data['AST'].mean() * 0.7 + 
+                          season_data['REB'].mean() * 0.5 + 
+                          season_data['STL'].mean() * 0.7 + 
+                          season_data['BLK'].mean() * 0.7 - 
+                          season_data['TOV'].mean() - 
+                          season_data['PF'].mean() * 0.4)
+                    st.metric("Box Plus/Minus", f"{bpm:+.1f}")
+            
+            st.subheader("Impact Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                if 'PLUS_MINUS' in season_data.columns:
+                    plus_minus = season_data['PLUS_MINUS'].mean()
+                    plus_minus_str = f"{plus_minus:+.1f}" if plus_minus != 0 else "0.0"
+                    st.metric("Plus/Minus", plus_minus_str)
+            with col2:
+                if all(col in season_data.columns for col in ['AST', 'TOV']):
+                    ast_to = season_data['AST'].sum() / season_data['TOV'].sum() if season_data['TOV'].sum() > 0 else 0
+                    st.metric("AST/TO Ratio", f"{ast_to:.1f}")
+            with col3:
+                if all(col in season_data.columns for col in ['PTS', 'AST', 'REB']):
+                    st.metric("PTS+AST+REB", f"{season_data['PTS'].mean() + season_data['AST'].mean() + season_data['REB'].mean():.1f}")
+            with col4:
+                if all(col in season_data.columns for col in ['FGM', 'FGA']):
+                    efg_pct = ((season_data['FGM'].sum() + 0.5 * season_data['FG3M'].sum()) / season_data['FGA'].sum() * 100)
+                    st.metric("Effective FG%", f"{efg_pct:.1f}%")
+            
+            st.subheader("Home vs Away Performance")
+            
+            # Split data into home and away games
+            home_games = season_data[season_data['MATCHUP'].str.contains('vs')]
+            away_games = season_data[season_data['MATCHUP'].str.contains('@')]
+            
+            # Points, Rebounds, Assists
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                home_pts = home_games['PTS'].mean()
+                away_pts = away_games['PTS'].mean()
+                st.metric("Points (Home/Away)", f"{home_pts:.1f}/{away_pts:.1f}", f"{home_pts - away_pts:+.1f}")
+            with col2:
+                home_reb = home_games['REB'].mean()
+                away_reb = away_games['REB'].mean()
+                st.metric("Rebounds (Home/Away)", f"{home_reb:.1f}/{away_reb:.1f}", f"{home_reb - away_reb:+.1f}")
+            with col3:
+                home_ast = home_games['AST'].mean()
+                away_ast = away_games['AST'].mean()
+                st.metric("Assists (Home/Away)", f"{home_ast:.1f}/{away_ast:.1f}", f"{home_ast - away_ast:+.1f}")
+            with col4:
+                home_min = home_games['MIN'].mean()
+                away_min = away_games['MIN'].mean()
+                st.metric("Minutes (Home/Away)", f"{home_min:.1f}/{away_min:.1f}", f"{home_min - away_min:+.1f}")
+            
+            # Shooting Percentages
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                if 'FGM' in home_games.columns and 'FGA' in home_games.columns:
+                    home_fg = (home_games['FGM'].sum() / home_games['FGA'].sum() * 100)
+                    away_fg = (away_games['FGM'].sum() / away_games['FGA'].sum() * 100)
+                    st.metric("FG% (Home/Away)", f"{home_fg:.1f}%/{away_fg:.1f}%", f"{home_fg - away_fg:+.1f}%")
+            with col2:
+                if 'FG3M' in home_games.columns and 'FG3A' in home_games.columns:
+                    home_3pt = (home_games['FG3M'].sum() / home_games['FG3A'].sum() * 100)
+                    away_3pt = (away_games['FG3M'].sum() / away_games['FG3A'].sum() * 100)
+                    st.metric("3PT% (Home/Away)", f"{home_3pt:.1f}%/{away_3pt:.1f}%", f"{home_3pt - away_3pt:+.1f}%")
+            with col3:
+                if 'FTM' in home_games.columns and 'FTA' in home_games.columns:
+                    home_ft = (home_games['FTM'].sum() / home_games['FTA'].sum() * 100)
+                    away_ft = (away_games['FTM'].sum() / away_games['FTA'].sum() * 100)
+                    st.metric("FT% (Home/Away)", f"{home_ft:.1f}%/{away_ft:.1f}%", f"{home_ft - away_ft:+.1f}%")
+            with col4:
+                if all(col in home_games.columns for col in ['FGM', 'FGA', 'FG3M']):
+                    home_efg = ((home_games['FGM'].sum() + 0.5 * home_games['FG3M'].sum()) / home_games['FGA'].sum() * 100)
+                    away_efg = ((away_games['FGM'].sum() + 0.5 * away_games['FG3M'].sum()) / away_games['FGA'].sum() * 100)
+                    st.metric("eFG% (Home/Away)", f"{home_efg:.1f}%/{away_efg:.1f}%", f"{home_efg - away_efg:+.1f}%")
+            
+            st.markdown("""
+            <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #262730;">
+                <details>
+                    <summary style="color: #262730; font-weight: bold;">Advanced Metrics Explanation</summary>
+                    <ul style="color: #262730;">
+                        <li><b>PER (Player Efficiency Rating)</b>: A measure of per-minute production standardized to 15.0 as league average</li>
+                        <li><b>Usage Rate</b>: Estimates the percentage of team plays used by a player while on the floor</li>
+                        <li><b>True Shooting %</b>: A measure of shooting efficiency that takes into account field goals, 3-point field goals, and free throws</li>
+                        <li><b>Box Plus/Minus (BPM)</b>: A box score estimate of the points per 100 possessions a player contributed above a league-average player</li>
+                        <li><b>Plus/Minus</b>: The point differential when the player is on the court</li>
+                        <li><b>AST/TO Ratio</b>: Measures a player's ability to create assists while limiting turnovers</li>
+                        <li><b>PTS+AST+REB</b>: Combined scoring, playmaking, and rebounding production</li>
+                        <li><b>Effective FG%</b>: Adjusts field goal percentage to account for the fact that 3-pointers are worth more than 2-pointers</li>
+                    </ul>
+                </details>
+            </div>
+            """, unsafe_allow_html=True)
     
     model, x_test, y_test, predictions = train_eval(df_clean)
     
@@ -650,62 +768,118 @@ if df is not None:
             
             st.subheader("Shot Type Analysis")
             
-            shot_type_stats = shot_data.groupby('SHOT_TYPE').agg({
+            # Aggregate data for 2PT vs 3PT shots
+            shot_data['Shot_Category'] = shot_data['SHOT_TYPE'].apply(lambda x: '3PT' if '3PT' in x else '2PT')
+            shot_category_stats = shot_data.groupby('Shot_Category').agg({
                 'SHOT_MADE_FLAG': ['count', 'mean'],
                 'SHOT_DISTANCE': 'mean'
             }).reset_index()
             
-            shot_type_stats.columns = ['Shot_Type', 'Attempts', 'FG%', 'Avg_Distance']
-            shot_type_stats['FG%'] = shot_type_stats['FG%'] * 100
+            shot_category_stats.columns = ['Shot_Category', 'Attempts', 'FG%', 'Avg_Distance']
+            shot_category_stats['FG%'] = shot_category_stats['FG%'] * 100
             
+            # Fill NaN values with 0
+            shot_category_stats['FG%'] = shot_category_stats['FG%'].fillna(0)
+            shot_category_stats['Avg_Distance'] = shot_category_stats['Avg_Distance'].fillna(0)
+            
+            # Create the pie chart
             fig_types = go.Figure()
             
-            fig_types.add_trace(go.Bar(
-                x=shot_type_stats['Shot_Type'],
-                y=shot_type_stats['Attempts'],
-                name='Attempts',
-                marker_color='#636EFA',
-                opacity=0.7
-            ))
-            
-            fig_types.add_trace(go.Scatter(
-                x=shot_type_stats['Shot_Type'],
-                y=shot_type_stats['FG%'],
-                name='FG%',
-                yaxis='y2',
-                line=dict(color='#EF553B', width=3),
-                mode='lines+markers'
-            ))
-            
-            fig_types.update_layout(
-                title="Shot Type Distribution",
-                xaxis_title="Shot Type",
-                yaxis_title="Number of Attempts",
-                yaxis2=dict(
-                    title="Field Goal %",
-                    overlaying='y',
-                    side='right',
-                    range=[0, 100]
+            # Add pie chart for shot distribution
+            fig_types.add_trace(go.Pie(
+                labels=shot_category_stats['Shot_Category'],
+                values=shot_category_stats['Attempts'],
+                hole=0.4,
+                marker=dict(
+                    colors=['#9B6B9E', '#E6A4B4'],  # Purple for 2PT, Pink for 3PT
+                    line=dict(color='white', width=2)
                 ),
+                textinfo='label+percent',
+                textposition='inside',
+                hovertemplate="<b>%{label}</b><br>" +
+                            "Attempts: %{value}<extra></extra>"
+            ))
+            
+            # Update layout
+            fig_types.update_layout(
                 showlegend=True,
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
                     y=1.02,
-                    xanchor="right",
-                    x=1
+                    xanchor="center",
+                    x=0.5,
+                    font=dict(color='white')
                 ),
-                height=400
+                height=400,
+                margin=dict(l=20, r=20, t=20, b=20),
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                hoverlabel=dict(
+                    bgcolor='rgba(0,0,0,0.8)',
+                    font_size=12,
+                    font_family='Arial'
+                )
             )
             
             st.plotly_chart(fig_types, use_container_width=True)
             
+            # Add some space
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Display FG% in a clean way
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("""
+                <div style='background-color: rgba(155, 107, 158, 0.05); padding: 15px; border-radius: 8px; border: 1px solid rgba(155, 107, 158, 0.2);'>
+                    <h4 style='color: #9B6B9E; margin: 0; font-size: 16px;'>2-Point Shooting</h4>
+                    <p style='color: white; font-size: 20px; margin: 8px 0;'>
+                        {:.1f}% FG
+                    </p>
+                    <p style='color: rgba(255, 255, 255, 0.7); margin: 0; font-size: 14px;'>
+                        {} attempts
+                    </p>
+                    <p style='color: rgba(255, 255, 255, 0.7); margin: 4px 0 0 0; font-size: 14px;'>
+                        Avg Distance: {:.1f} ft
+                    </p>
+                </div>
+                """.format(
+                    shot_category_stats[shot_category_stats['Shot_Category'] == '2PT']['FG%'].iloc[0],
+                    shot_category_stats[shot_category_stats['Shot_Category'] == '2PT']['Attempts'].iloc[0],
+                    shot_category_stats[shot_category_stats['Shot_Category'] == '2PT']['Avg_Distance'].iloc[0]
+                ), unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown("""
+                <div style='background-color: rgba(230, 164, 180, 0.05); padding: 15px; border-radius: 8px; border: 1px solid rgba(230, 164, 180, 0.2);'>
+                    <h4 style='color: #E6A4B4; margin: 0; font-size: 16px;'>3-Point Shooting</h4>
+                    <p style='color: white; font-size: 20px; margin: 8px 0;'>
+                        {:.1f}% FG
+                    </p>
+                    <p style='color: rgba(255, 255, 255, 0.7); margin: 0; font-size: 14px;'>
+                        {} attempts
+                    </p>
+                    <p style='color: rgba(255, 255, 255, 0.7); margin: 4px 0 0 0; font-size: 14px;'>
+                        Avg Distance: {:.1f} ft
+                    </p>
+                </div>
+                """.format(
+                    shot_category_stats[shot_category_stats['Shot_Category'] == '3PT']['FG%'].iloc[0],
+                    shot_category_stats[shot_category_stats['Shot_Category'] == '3PT']['Attempts'].iloc[0],
+                    shot_category_stats[shot_category_stats['Shot_Category'] == '3PT']['Avg_Distance'].iloc[0]
+                ), unsafe_allow_html=True)
+            
+            # Add more space before the guide
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            
+            # Move the shot analysis guide to the bottom
             st.markdown("""
-            <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #262730;">
+            <div style="background-color: rgba(240, 242, 246, 0.05); padding: 15px; border-radius: 8px; margin-top: 20px; color: #262730;">
                 <details>
-                    <summary style="color: #262730; font-weight: bold;">Shot Analysis Guide</summary>
-                    <p style="color: #262730;">This analysis shows:</p>
-                    <ul style="color: #262730;">
+                    <summary style="color: white; font-weight: bold; cursor: pointer;">Shot Analysis Guide</summary>
+                    <p style="color: rgba(255, 255, 255, 0.7); margin-top: 10px;">This analysis shows:</p>
+                    <ul style="color: rgba(255, 255, 255, 0.7);">
                         <li><b>Shot Distribution</b>: Number of attempts and shooting percentage at different distances</li>
                         <li><b>Best Range</b>: Distance range with highest shooting percentage (minimum 10 attempts)</li>
                         <li><b>Most Common Range</b>: Distance where the player shoots most frequently</li>
@@ -714,6 +888,9 @@ if df is not None:
                 </details>
             </div>
             """, unsafe_allow_html=True)
+            
+            # After the existing shot type analysis
+            st.markdown("<br>", unsafe_allow_html=True)
         else:
             st.warning("Shot data not available for this player.")
     
@@ -777,40 +954,71 @@ if df is not None:
                     yaxis_title="Average",
                     barmode='group',
                     bargap=0.15,
-                    bargroupgap=0.1
+                    bargroupgap=0.1,
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    )
                 )
                 
-                st.plotly_chart(fig_basic, use_container_width=True)
+                st.plotly_chart(fig_basic, use_container_width=True, key="basic_stats_comparison")
                 
                 st.subheader("Advanced Stats Comparison")
                 
-                advanced_stats = []
+                # Initialize empty list for stats
+                stats = []
+                
+                # For each player, get their stats
                 for player in all_players:
                     if player in season_data_dict:
                         data = season_data_dict[player]
-                        stats = {
+                        
+                        # Get basic stats
+                        player_stats = {
                             'Player': player,
-                            'FG%': (data['FGM'].sum() / data['FGA'].sum() * 100) if 'FGM' in data.columns and 'FGA' in data.columns else None,
-                            '3P%': (data['FG3M'].sum() / data['FG3A'].sum() * 100) if 'FG3M' in data.columns and 'FG3A' in data.columns else None,
-                            'FT%': (data['FTM'].sum() / data['FTA'].sum() * 100) if 'FTM' in data.columns and 'FTA' in data.columns else None,
-                            'TOV': data['TOV'].mean() if 'TOV' in data.columns else None,
-                            'STL': data['STL'].mean() if 'STL' in data.columns else None,
-                            'BLK': data['BLK'].mean() if 'BLK' in data.columns else None,
-                            'Usage Rate': (data['FGA'].sum() + 0.44 * data['FTA'].sum() + data['TOV'].sum()) / ((data['MIN'].sum() / 48) * 100) * 100 if all(col in data.columns for col in ['FGA', 'FTA', 'TOV', 'MIN']) else None,
-                            'True Shooting %': data['PTS'].sum() / (2 * (data['FGA'].sum() + 0.44 * data['FTA'].sum())) * 100 if all(col in data.columns for col in ['PTS', 'FGA', 'FTA']) else None
+                            'PTS': round(data['PTS'].mean(), 1),
+                            'AST': round(data['AST'].mean(), 1),
+                            'REB': round(data['REB'].mean(), 1),
+                            'TOV': round(data['TOV'].mean(), 1),
+                            'STL': round(data['STL'].mean(), 1),
+                            'BLK': round(data['BLK'].mean(), 1)
                         }
-                        advanced_stats.append(stats)
+                        
+                        # Get shooting percentages from totals
+                        if 'FGM' in data.columns and 'FGA' in data.columns:
+                            fg_pct = (data['FGM'].sum() / data['FGA'].sum()) * 100
+                            player_stats['FG%'] = f"{round(fg_pct, 1)}%"
+                        
+                        if 'FG3M' in data.columns and 'FG3A' in data.columns:
+                            three_pct = (data['FG3M'].sum() / data['FG3A'].sum()) * 100
+                            player_stats['3P%'] = f"{round(three_pct, 1)}%"
+                        
+                        if 'FTM' in data.columns and 'FTA' in data.columns:
+                            ft_pct = (data['FTM'].sum() / data['FTA'].sum()) * 100
+                            player_stats['FT%'] = f"{round(ft_pct, 1)}%"
+                        
+                        stats.append(player_stats)
                 
-                if advanced_stats:
-                    advanced_df = pd.DataFrame(advanced_stats)
-                    st.dataframe(advanced_df, use_container_width=True)
+                # Create and display DataFrame
+                if stats:
+                    df = pd.DataFrame(stats)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
                 
                 st.subheader("Game Score Comparison")
                 
+                # Initialize empty list for game scores
                 game_scores = []
+                
+                # For each player, calculate game score
                 for player in all_players:
                     if player in season_data_dict:
                         data = season_data_dict[player]
+                        
+                        # Calculate game score
                         game_score = data['PTS']
                         if 'FGM' in data.columns:
                             game_score += 0.4 * data['FGM']
@@ -837,37 +1045,14 @@ if df is not None:
                         
                         game_scores.append({
                             'Player': player,
-                            'Average Game Score': game_score.mean(),
-                            'Best Game Score': game_score.max()
+                            'Average Game Score': round(game_score.mean(), 1),
+                            'Best Game Score': round(game_score.max(), 1)
                         })
                 
+                # Create and display DataFrame
                 if game_scores:
                     game_score_df = pd.DataFrame(game_scores)
-                    st.dataframe(game_score_df, use_container_width=True)
-                
-                st.markdown("""
-                <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #262730;">
-                    <details>
-                        <summary style="color: #262730; font-weight: bold;">How is Game Score calculated?</summary>
-                        <p style="color: #262730;">Game Score is calculated using John Hollinger's formula:</p>
-                        <ul style="color: #262730;">
-                            <li>Points: +1.0 per point</li>
-                            <li>Field Goals Made: +0.4 per FGM</li>
-                            <li>Field Goals Attempted: -0.7 per FGA</li>
-                            <li>Free Throws Made: +0.4 per FTM</li>
-                            <li>Free Throws Attempted: -0.7 per FTA</li>
-                            <li>Offensive Rebounds: +0.7 per OREB</li>
-                            <li>Defensive Rebounds: +0.3 per DREB</li>
-                            <li>Steals: +1.0 per STL</li>
-                            <li>Assists: +0.7 per AST</li>
-                            <li>Blocks: +0.7 per BLK</li>
-                            <li>Turnovers: -1.0 per TOV</li>
-                            <li>Personal Fouls: -0.4 per PF</li>
-                        </ul>
-                        <p style="color: #262730;">This provides a comprehensive measure of a player's overall contribution in a game.</p>
-                    </details>
-                </div>
-                """, unsafe_allow_html=True)
+                    st.dataframe(game_score_df, use_container_width=True, hide_index=True)
             else:
                 st.warning("No valid player data available for comparison.")
         else:

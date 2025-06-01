@@ -345,7 +345,29 @@ def get_head_to_head_stats(player_name, opponent_team, season='2024-25', max_ret
             return None
             
         opponent_name = opponent_team['full_name'] if isinstance(opponent_team, dict) else opponent_team
-        h2h_games = all_logs[all_logs['MATCHUP'].str.contains(opponent_name, case=False)]
+        
+        # Convert opponent name to abbreviation if it's a full name
+        team_abbrev_to_full = {
+            'ATL': 'Atlanta Hawks', 'BOS': 'Boston Celtics', 'BKN': 'Brooklyn Nets',
+            'CHA': 'Charlotte Hornets', 'CHI': 'Chicago Bulls', 'CLE': 'Cleveland Cavaliers',
+            'DAL': 'Dallas Mavericks', 'DEN': 'Denver Nuggets', 'DET': 'Detroit Pistons',
+            'GSW': 'Golden State Warriors', 'HOU': 'Houston Rockets', 'IND': 'Indiana Pacers',
+            'LAC': 'Los Angeles Clippers', 'LAL': 'Los Angeles Lakers', 'MEM': 'Memphis Grizzlies',
+            'MIA': 'Miami Heat', 'MIL': 'Milwaukee Bucks', 'MIN': 'Minnesota Timberwolves',
+            'NOP': 'New Orleans Pelicans', 'NYK': 'New York Knicks', 'OKC': 'Oklahoma City Thunder',
+            'ORL': 'Orlando Magic', 'PHI': 'Philadelphia 76ers', 'PHX': 'Phoenix Suns',
+            'POR': 'Portland Trail Blazers', 'SAC': 'Sacramento Kings', 'SAS': 'San Antonio Spurs',
+            'TOR': 'Toronto Raptors', 'UTA': 'Utah Jazz', 'WAS': 'Washington Wizards'
+        }
+        
+        # Create reverse mapping
+        full_to_abbrev = {v: k for k, v in team_abbrev_to_full.items()}
+        
+        # Get opponent abbreviation
+        opponent_abbrev = full_to_abbrev.get(opponent_name, opponent_name)
+        
+        # Match using the abbreviation
+        h2h_games = all_logs[all_logs['MATCHUP'].str.contains(opponent_abbrev, case=False)]
         if h2h_games.empty:
             return None
             
