@@ -657,6 +657,9 @@ if df is not None:
     if 'active_tab' not in st.session_state:
         st.session_state.active_tab = "Overview"
     
+    if 'selected_season' not in st.session_state:
+        st.session_state.selected_season = available_seasons[0]
+    
     if tab1:
         st.session_state.active_tab = "Overview"
     elif tab2:
@@ -668,11 +671,22 @@ if df is not None:
     elif tab5:
         st.session_state.active_tab = "Player Comparison"
     
+    # Add season selector in sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Season Selection")
+    selected_season = st.sidebar.selectbox(
+        "Select Season",
+        options=available_seasons,
+        index=available_seasons.index(st.session_state.selected_season),
+        key="season_selector"
+    )
+    st.session_state.selected_season = selected_season
+    
     if st.session_state.active_tab == "Overview":
         with tab1:
-            season_data = df_clean[df_clean['SEASON'] == available_seasons[0]]
+            season_data = df_clean[df_clean['SEASON'] == st.session_state.selected_season]
             
-            st.subheader("Season Averages")
+            st.subheader(f"Season Averages - {st.session_state.selected_season}")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Points", f"{season_data['PTS'].mean():.1f}")
@@ -683,7 +697,7 @@ if df is not None:
             with col4:
                 st.metric("Minutes", f"{season_data['MIN'].mean():.1f}")
             
-            st.subheader("Shooting Efficiency")
+            st.subheader(f"Shooting Efficiency - {st.session_state.selected_season}")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 if 'FGM' in season_data.columns and 'FGA' in season_data.columns:
@@ -702,7 +716,7 @@ if df is not None:
                     efg_pct = ((season_data['FGM'].sum() + 0.5 * season_data['FG3M'].sum()) / season_data['FGA'].sum() * 100)
                     st.metric("Effective FG%", f"{efg_pct:.1f}%")
             
-            st.subheader("Advanced Stats")
+            st.subheader(f"Advanced Stats - {st.session_state.selected_season}")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 if 'TOV' in season_data.columns:
@@ -717,7 +731,58 @@ if df is not None:
                 if 'PF' in season_data.columns:
                     st.metric("Fouls", f"{season_data['PF'].mean():.1f}")
             
-            st.subheader("Advanced Metrics")
+            st.subheader(f"Season Highs - {st.session_state.selected_season}")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                if 'PTS' in season_data.columns:
+                    max_pts = season_data['PTS'].max()
+                    max_pts_game = season_data[season_data['PTS'] == max_pts].iloc[0]
+                    game_date = max_pts_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("Points", f"{max_pts:.0f}", f"{game_date} {max_pts_game['MATCHUP']}")
+                if 'REB' in season_data.columns:
+                    max_reb = season_data['REB'].max()
+                    max_reb_game = season_data[season_data['REB'] == max_reb].iloc[0]
+                    game_date = max_reb_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("Rebounds", f"{max_reb:.0f}", f"{game_date} {max_reb_game['MATCHUP']}")
+            
+            with col2:
+                if 'AST' in season_data.columns:
+                    max_ast = season_data['AST'].max()
+                    max_ast_game = season_data[season_data['AST'] == max_ast].iloc[0]
+                    game_date = max_ast_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("Assists", f"{max_ast:.0f}", f"{game_date} {max_ast_game['MATCHUP']}")
+                if 'STL' in season_data.columns:
+                    max_stl = season_data['STL'].max()
+                    max_stl_game = season_data[season_data['STL'] == max_stl].iloc[0]
+                    game_date = max_stl_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("Steals", f"{max_stl:.0f}", f"{game_date} {max_stl_game['MATCHUP']}")
+            
+            with col3:
+                if 'BLK' in season_data.columns:
+                    max_blk = season_data['BLK'].max()
+                    max_blk_game = season_data[season_data['BLK'] == max_blk].iloc[0]
+                    game_date = max_blk_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("Blocks", f"{max_blk:.0f}", f"{game_date} {max_blk_game['MATCHUP']}")
+                if 'FG3M' in season_data.columns:
+                    max_3pm = season_data['FG3M'].max()
+                    max_3pm_game = season_data[season_data['FG3M'] == max_3pm].iloc[0]
+                    game_date = max_3pm_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("3-Pointers Made", f"{max_3pm:.0f}", f"{game_date} {max_3pm_game['MATCHUP']}")
+            
+            with col4:
+                if 'FGM' in season_data.columns and 'FGA' in season_data.columns:
+                    max_fg = season_data['FGM'].max()
+                    max_fg_game = season_data[season_data['FGM'] == max_fg].iloc[0]
+                    game_date = max_fg_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("Field Goals Made", f"{max_fg:.0f}", f"{game_date} {max_fg_game['MATCHUP']}")
+                if 'FTM' in season_data.columns:
+                    max_ft = season_data['FTM'].max()
+                    max_ft_game = season_data[season_data['FTM'] == max_ft].iloc[0]
+                    game_date = max_ft_game['GAME_DATE'].strftime('%m/%d/%y')
+                    st.metric("Free Throws Made", f"{max_ft:.0f}", f"{game_date} {max_ft_game['MATCHUP']}")
+            
+            st.subheader(f"Advanced Metrics - {st.session_state.selected_season}")
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -734,7 +799,7 @@ if df is not None:
                           season_data['BLK'].mean() * 1.0 - 
                           season_data['TOV'].mean() * 1.0 - 
                           season_data['PF'].mean() * 0.5)
-                    st.metric("PER", f"{per:.1f}")
+                    st.metric("PER", f"{per:.1f}", help="Player Efficiency Rating: A measure of per-minute production standardized such that the league average is 15.0")
             
             with col2:
                 if all(col in season_data.columns for col in ['FGA', 'FTA', 'TOV', 'MIN']):
@@ -743,14 +808,14 @@ if df is not None:
                     if minutes > 0:
                         possessions_per_game = (minutes / 48) * 100
                         usg_rate = (possessions / possessions_per_game) * 100
-                        st.metric("Usage Rate", f"{usg_rate:.1f}%")
+                        st.metric("Usage Rate", f"{usg_rate:.1f}%", help="Percentage of team plays used by a player while on the floor")
             
             with col3:
                 if all(col in season_data.columns for col in ['PTS', 'FGA', 'FTA']):
                     fga_fta = season_data['FGA'].sum() + 0.44 * season_data['FTA'].sum()
                     if fga_fta > 0:
                         ts_pct = season_data['PTS'].sum() / (2 * fga_fta) * 100
-                        st.metric("True Shooting %", f"{ts_pct:.1f}%")
+                        st.metric("True Shooting %", f"{ts_pct:.1f}%", help="Measure of shooting efficiency that takes into account field goals, 3-point field goals, and free throws")
             
             with col4:
                 if all(col in season_data.columns for col in ['PTS', 'AST', 'REB', 'STL', 'BLK', 'TOV', 'PF']):
@@ -761,28 +826,28 @@ if df is not None:
                           season_data['BLK'].mean() * 0.7 - 
                           season_data['TOV'].mean() - 
                           season_data['PF'].mean() * 0.4)
-                    st.metric("Box Plus/Minus", f"{bpm:+.1f}")
+                    st.metric("Box Plus/Minus", f"{bpm:+.1f}", help="Box score estimate of the points per 100 possessions a player contributed above a league-average player")
             
-            st.subheader("Impact Metrics")
+            st.subheader(f"Impact Metrics - {st.session_state.selected_season}")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 if 'PLUS_MINUS' in season_data.columns:
                     plus_minus = season_data['PLUS_MINUS'].mean()
                     plus_minus_str = f"{plus_minus:+.1f}" if plus_minus != 0 else "0.0"
-                    st.metric("Plus/Minus", plus_minus_str)
+                    st.metric("Plus/Minus", plus_minus_str, help="Average point differential when the player is on the court")
             with col2:
                 if all(col in season_data.columns for col in ['AST', 'TOV']):
                     ast_to = season_data['AST'].sum() / season_data['TOV'].sum() if season_data['TOV'].sum() > 0 else 0
-                    st.metric("AST/TO Ratio", f"{ast_to:.1f}")
+                    st.metric("AST/TO Ratio", f"{ast_to:.1f}", help="Ratio of assists to turnovers, measuring playmaking efficiency")
             with col3:
                 if all(col in season_data.columns for col in ['PTS', 'AST', 'REB']):
-                    st.metric("PTS+AST+REB", f"{season_data['PTS'].mean() + season_data['AST'].mean() + season_data['REB'].mean():.1f}")
+                    st.metric("PTS+AST+REB", f"{season_data['PTS'].mean() + season_data['AST'].mean() + season_data['REB'].mean():.1f}", help="Sum of points, assists, and rebounds per game")
             with col4:
                 if all(col in season_data.columns for col in ['FGM', 'FGA']):
                     efg_pct = ((season_data['FGM'].sum() + 0.5 * season_data['FG3M'].sum()) / season_data['FGA'].sum() * 100)
-                    st.metric("Effective FG%", f"{efg_pct:.1f}%")
+                    st.metric("Effective FG%", f"{efg_pct:.1f}%", help="Field goal percentage that accounts for 3-pointers being worth more than 2-pointers")
             
-            st.subheader("Home vs Away Performance")
+            st.subheader(f"Home vs Away Performance - {st.session_state.selected_season}")
             
             home_games = season_data[season_data['MATCHUP'].str.contains('vs')]
             away_games = season_data[season_data['MATCHUP'].str.contains('@')]
@@ -826,24 +891,6 @@ if df is not None:
                     home_efg = ((home_games['FGM'].sum() + 0.5 * home_games['FG3M'].sum()) / home_games['FGA'].sum() * 100)
                     away_efg = ((away_games['FGM'].sum() + 0.5 * away_games['FG3M'].sum()) / away_games['FGA'].sum() * 100)
                     st.metric("eFG% (Home/Away)", f"{home_efg:.1f}%/{away_efg:.1f}%", f"{home_efg - away_efg:+.1f}%")
-            
-            st.markdown("""
-            <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #262730;">
-                <details>
-                    <summary style="color: #262730; font-weight: bold;">Advanced Metrics Explanation</summary>
-                    <ul style="color: #262730;">
-                        <li><b>PER (Player Efficiency Rating)</b>: A measure of per-minute production standardized to 15.0 as league average</li>
-                        <li><b>Usage Rate</b>: Estimates the percentage of team plays used by a player while on the floor</li>
-                        <li><b>True Shooting %</b>: A measure of shooting efficiency that takes into account field goals, 3-point field goals, and free throws</li>
-                        <li><b>Box Plus/Minus (BPM)</b>: A box score estimate of the points per 100 possessions a player contributed above a league-average player</li>
-                        <li><b>Plus/Minus</b>: The point differential when the player is on the court</li>
-                        <li><b>AST/TO Ratio</b>: Measures a player's ability to create assists while limiting turnovers</li>
-                        <li><b>PTS+AST+REB</b>: Combined scoring, playmaking, and rebounding production</li>
-                        <li><b>Effective FG%</b>: Adjusts field goal percentage to account for the fact that 3-pointers are worth more than 2-pointers</li>
-                    </ul>
-                </details>
-            </div>
-            """, unsafe_allow_html=True)
     
     model, x_test, y_test, predictions = train_eval(df_clean)
     
@@ -995,18 +1042,9 @@ if df is not None:
                 st.info("No upcoming games found in the schedule. The NBA season may be in the offseason.")
     
     with tab3:
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            selected_season = st.selectbox(
-                "Select Season",
-                options=available_seasons,
-                index=0,
-                key="season_select"
-            )
+        st.subheader(f"Game-by-Game Performance - {st.session_state.selected_season}")
         
-        season_data = df_clean[df_clean['SEASON'] == selected_season]
-        
-        st.subheader(f"Game-by-Game Performance - {selected_season}")
+        season_data = df_clean[df_clean['SEASON'] == st.session_state.selected_season]
         
         fig_games = go.Figure()
         
@@ -1103,7 +1141,7 @@ if df is not None:
         ))
         
         fig_games.update_layout(
-            title=f"{player_name}'s Game Log - {selected_season}",
+            title=f"{player_name}'s Game Log - {st.session_state.selected_season}",
             xaxis_title="Date",
             yaxis_title="Stats",
             hovermode='x unified',
@@ -1145,6 +1183,84 @@ if df is not None:
             
             if 'FTM' in season_data.columns and 'FTA' in season_data.columns:
                 st.metric("Free Throws Made/Attempted", f"{season_data['FTM'].sum()}/{season_data['FTA'].sum()}")
+        
+        st.subheader("Win/Loss Record by Points")
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            point_threshold = st.number_input(
+                "Select Point Threshold",
+                min_value=0,
+                max_value=100,
+                value=20,
+                step=1,
+                help="See win/loss record when player scores above/below this many points"
+            )
+        
+        with col2:
+            above_threshold = season_data[season_data['PTS'] >= point_threshold]
+            below_threshold = season_data[season_data['PTS'] < point_threshold]
+            
+            above_wins = len(above_threshold[above_threshold['PLUS_MINUS'] > 0])
+            above_losses = len(above_threshold[above_threshold['PLUS_MINUS'] <= 0])
+            below_wins = len(below_threshold[below_threshold['PLUS_MINUS'] > 0])
+            below_losses = len(below_threshold[below_threshold['PLUS_MINUS'] <= 0])
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**When scoring {point_threshold}+ points:**")
+                st.metric("Record", f"{above_wins}-{above_losses}", 
+                         f"{above_wins/(above_wins+above_losses)*100:.1f}% win rate" if (above_wins+above_losses) > 0 else "N/A")
+                if above_wins + above_losses > 0:
+                    st.metric("Average Plus/Minus", f"{above_threshold['PLUS_MINUS'].mean():.1f}")
+            
+            with col2:
+                st.markdown(f"**When scoring <{point_threshold} points:**")
+                st.metric("Record", f"{below_wins}-{below_losses}", 
+                         f"{below_wins/(below_wins+below_losses)*100:.1f}% win rate" if (below_wins+below_losses) > 0 else "N/A")
+                if below_wins + below_losses > 0:
+                    st.metric("Average Plus/Minus", f"{below_threshold['PLUS_MINUS'].mean():.1f}")
+            
+            if 'PLUS_MINUS' in season_data.columns:
+                fig_wl = go.Figure()
+                
+                fig_wl.add_trace(go.Bar(
+                    y=['Above Threshold', 'Below Threshold'],
+                    x=[above_wins, below_wins],
+                    name='Wins',
+                    marker_color='#00CC96',
+                    orientation='h',
+                    width=0.4
+                ))
+                
+                fig_wl.add_trace(go.Bar(
+                    y=['Above Threshold', 'Below Threshold'],
+                    x=[above_losses, below_losses],
+                    name='Losses',
+                    marker_color='#EF553B',
+                    orientation='h',
+                    width=0.4
+                ))
+                
+                fig_wl.update_layout(
+                    title=f"Win/Loss Record When Scoring {point_threshold}+ Points",
+                    barmode='group',
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    ),
+                    height=300,
+                    xaxis_title="Number of Games",
+                    yaxis_title="",
+                    bargap=0.2,
+                    bargroupgap=0.1
+                )
+                
+                st.plotly_chart(fig_wl, use_container_width=True)
         
         if 'FGM' in season_data.columns and 'FGA' in season_data.columns:
             fig_shooting = go.Figure()
@@ -1203,9 +1319,9 @@ if df is not None:
             st.plotly_chart(fig_shooting, use_container_width=True, key="shooting_trends_chart_1")
     
     with tab4:
-        st.subheader("Shot Distance Analysis")
+        st.subheader(f"Shot Distance Analysis - {st.session_state.selected_season}")
         
-        shot_data = get_shot_data(player_name)
+        shot_data = get_shot_data(player_name, season=st.session_state.selected_season)
         if shot_data is not None and not shot_data.empty:
             bins = [0, 5, 10, 15, 20, 25, 30, 35, 40]
             labels = ['0-5', '5-10', '10-15', '15-20', '20-25', '25-30', '30-35', '35-40']
@@ -1240,7 +1356,7 @@ if df is not None:
             ))
             
             fig.update_layout(
-                title=f"{player_name}'s Shot Distribution by Distance",
+                title=f"{player_name}'s Shot Distribution by Distance - {st.session_state.selected_season}",
                 xaxis_title="Distance from Basket (feet)",
                 yaxis_title="Number of Attempts",
                 yaxis2=dict(
@@ -1316,7 +1432,7 @@ if df is not None:
                 else:
                     st.metric("Farthest Shot Made", "N/A", "No made shots")
             
-            st.subheader("Shot Type Analysis")
+            st.subheader(f"Shot Type Analysis - {st.session_state.selected_season}")
             
             shot_data['Shot_Category'] = shot_data['SHOT_TYPE'].apply(lambda x: '3PT' if '3PT' in x else '2PT')
             shot_category_stats = shot_data.groupby('Shot_Category').agg({
@@ -1347,6 +1463,7 @@ if df is not None:
             ))
             
             fig_types.update_layout(
+                title=f"Shot Type Distribution - {st.session_state.selected_season}",
                 showlegend=True,
                 legend=dict(
                     orientation="h",
@@ -1432,17 +1549,10 @@ if df is not None:
             
             st.markdown("<br>", unsafe_allow_html=True)
         else:
-            st.warning("Shot data not available for this player.")
+            st.warning(f"Shot data not available for {st.session_state.selected_season}.")
     
     with tab5:
-        st.subheader("Player Comparison")
-        
-        selected_season = st.selectbox(
-            "Select Season",
-            options=available_seasons,
-            index=0,
-            key="comparison_season_select"
-        )
+        st.subheader(f"Player Comparison - {st.session_state.selected_season}")
         
         col1, col2 = st.columns(2)
         
@@ -1471,11 +1581,11 @@ if df is not None:
             
             if len(player_data) > 1:
                 season_data_dict = {
-                    player: data[data['SEASON'] == selected_season]
+                    player: data[data['SEASON'] == st.session_state.selected_season]
                     for player, data in player_data.items()
                 }
                 
-                st.subheader("Basic Stats Comparison")
+                st.subheader(f"Basic Stats Comparison - {st.session_state.selected_season}")
                 fig_basic = go.Figure()
                 
                 for i, player in enumerate(all_players):
@@ -1489,7 +1599,7 @@ if df is not None:
                         ))
                 
                 fig_basic.update_layout(
-                    title="Season Average Comparison",
+                    title=f"Season Average Comparison - {st.session_state.selected_season}",
                     xaxis_title="Stat",
                     yaxis_title="Average",
                     barmode='group',
@@ -1507,7 +1617,7 @@ if df is not None:
                 
                 st.plotly_chart(fig_basic, use_container_width=True, key="basic_stats_comparison")
                 
-                st.subheader("Advanced Stats Comparison")
+                st.subheader(f"Advanced Stats Comparison - {st.session_state.selected_season}")
                 
                 stats = []
                 
@@ -1543,7 +1653,7 @@ if df is not None:
                     df = pd.DataFrame(stats)
                     st.dataframe(df, use_container_width=True, hide_index=True)
                 
-                st.subheader("Game Score Comparison")
+                st.subheader(f"Game Score Comparison - {st.session_state.selected_season}")
                 
                 game_scores = []
                 
@@ -1587,4 +1697,4 @@ if df is not None:
             else:
                 st.warning("No valid player data available for comparison.")
         else:
-            st.info("Select players to compare from the dropdown above.") 
+            st.info("Select players to compare from the dropdown above.")
