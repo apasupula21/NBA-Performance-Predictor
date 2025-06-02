@@ -19,16 +19,510 @@ from nba_api.stats.endpoints import shotchartdetail
 import numpy as np
 from datetime import datetime
 import time
+import sqlite3
+import os
+import unicodedata
+
+DB_PATH = 'nba_data.db'
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS game_logs (
+            PLAYER_ID INTEGER,
+            PLAYER_NAME TEXT,
+            GAME_ID TEXT,
+            GAME_DATE TEXT,
+            SEASON TEXT,
+            MATCHUP TEXT,
+            TEAM_ABBREVIATION TEXT,
+            PTS REAL,
+            REB REAL,
+            AST REAL,
+            MIN REAL,
+            FGM REAL,
+            FGA REAL,
+            FG3M REAL,
+            FG3A REAL,
+            FTM REAL,
+            FTA REAL,
+            OREB REAL,
+            DREB REAL,
+            STL REAL,
+            BLK REAL,
+            TOV REAL,
+            PF REAL,
+            PLUS_MINUS REAL,
+            DATA_SOURCE TEXT,
+            LAST_UPDATED TEXT,
+            PRIMARY KEY (PLAYER_ID, GAME_ID)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS shot_data (
+            PLAYER_ID INTEGER,
+            PLAYER_NAME TEXT,
+            SEASON TEXT,
+            GAME_ID TEXT,
+            SHOT_ID TEXT,
+            LOC_X REAL,
+            LOC_Y REAL,
+            SHOT_DISTANCE REAL,
+            SHOT_TYPE TEXT,
+            SHOT_MADE_FLAG INTEGER,
+            DATA_SOURCE TEXT,
+            LAST_UPDATED TEXT,
+            PRIMARY KEY (PLAYER_ID, GAME_ID, SHOT_ID)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS player_metadata (
+            PLAYER_ID INTEGER PRIMARY KEY,
+            PLAYER_NAME TEXT,
+            ROOKIE_SEASON TEXT,
+            LAST_SEASON TEXT,
+            ACTIVE BOOLEAN,
+            LAST_UPDATED TEXT
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS data_validation (
+            ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            TABLE_NAME TEXT,
+            VALIDATION_DATE TEXT,
+            RECORDS_CHECKED INTEGER,
+            RECORDS_VALID INTEGER,
+            RECORDS_INVALID INTEGER,
+            VALIDATION_NOTES TEXT
+        )
+    ''')
+    
+    c.execute('CREATE INDEX IF NOT EXISTS idx_game_logs_player_name ON game_logs(PLAYER_NAME)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_game_logs_season ON game_logs(SEASON)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_game_logs_game_date ON game_logs(GAME_DATE)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_shot_data_player_name ON shot_data(PLAYER_NAME)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_shot_data_season ON shot_data(SEASON)')
+    
+    conn.commit()
+    conn.close()
+
+def fix_column_names():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        c.execute("PRAGMA table_info(game_logs)")
+        current_columns = {row[1]: row[1] for row in c.fetchall()}
+        
+        correct_columns = {
+            'player_id': 'PLAYER_ID',
+            'player_name': 'PLAYER_NAME',
+            'game_id': 'GAME_ID',
+            'game_date': 'GAME_DATE',
+            'season': 'SEASON',
+            'matchup': 'MATCHUP',
+            'team_abbreviation': 'TEAM_ABBREVIATION',
+            'pts': 'PTS',
+            'reb': 'REB',
+            'ast': 'AST',
+            'min': 'MIN',
+            'fgm': 'FGM',
+            'fga': 'FGA',
+            'fg3m': 'FG3M',
+            'fg3a': 'FG3A',
+            'ftm': 'FTM',
+            'fta': 'FTA',
+            'oreb': 'OREB',
+            'dreb': 'DREB',
+            'stl': 'STL',
+            'blk': 'BLK',
+            'tov': 'TOV',
+            'pf': 'PF',
+            'plus_minus': 'PLUS_MINUS',
+            'data_source': 'DATA_SOURCE',
+            'last_updated': 'LAST_UPDATED'
+        }
+        
+        for old_name, new_name in correct_columns.items():
+            if old_name in current_columns and old_name != new_name:
+                c.execute(f'ALTER TABLE game_logs RENAME COLUMN {old_name} TO {new_name}')
+        
+        conn.commit()
+        conn.close()
+    except Exception:
+        if 'conn' in locals():
+            conn.close()
+
+def validate_game_logs_data(df):
+    """Validate game logs data before insertion."""
+    if df is None or df.empty:
+        return False, "Empty dataframe"
+    
+    column_mapping = {
+        'PLAYER_ID': 'PLAYER_ID',
+        'GAME_ID': 'GAME_ID',
+        'GAME_DATE': 'GAME_DATE',
+        'SEASON': 'SEASON',
+        'PTS': 'PTS',
+        'REB': 'REB',
+        'AST': 'AST'
+    }
+    
+    required_stats = ['PTS', 'REB', 'AST']
+    if not all(stat in df.columns for stat in required_stats):
+        return False, f"Missing required stats: {[stat for stat in required_stats if stat not in df.columns]}"
+    
+    if df['PTS'].min() < 0 or df['REB'].min() < 0 or df['AST'].min() < 0:
+        return False, "Negative values found in stats"
+    
+    if df['PTS'].max() > 100 or df['REB'].max() > 50 or df['AST'].max() > 50:
+        return False, "Unreasonable stat values found"
+    
+    return True, "Data validation passed"
+
+def validate_shot_data(df):
+    if df is None or df.empty:
+        return False, "Empty dataframe"
+    
+    required_columns = ['LOC_X', 'LOC_Y', 'SHOT_DISTANCE', 'SHOT_MADE_FLAG']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        return False, f"Missing required columns: {missing_columns}"
+    
+    return True, "Data validation passed"
+
+def update_player_metadata(player_name):
+    """Update or insert player metadata."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            conn.close()
+            return
+        
+        player_id = player_dict[0]['id']
+        player_info = players.find_player_by_id(player_id)
+        
+        if player_info:
+            rookie_season = None
+            last_season = None
+            active = True
+            
+            if 'year_start' in player_info and player_info['year_start']:
+                rookie_season = f"{player_info['year_start']}-{str(int(player_info['year_start']) + 1)[-2:]}"
+            
+            if 'year_end' in player_info and player_info['year_end']:
+                last_season = f"{player_info['year_end']}-{str(int(player_info['year_end']) + 1)[-2:]}"
+            
+            if 'is_active' in player_info:
+                active = player_info['is_active']
+            
+            c.execute('''
+                INSERT OR REPLACE INTO player_metadata 
+                (player_id, player_name, rookie_season, last_season, active, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (player_id, player_name, rookie_season, last_season, active, datetime.now().isoformat()))
+            
+            conn.commit()
+        
+        conn.close()
+    except Exception as e:
+        st.error(f"Error updating player metadata: {str(e)}")
+        if 'conn' in locals():
+            conn.close()
+
+def log_data_validation(table_name, records_checked, records_valid, records_invalid, notes):
+    """Log data validation results."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute('''
+        INSERT INTO data_validation 
+        (table_name, validation_date, records_checked, records_valid, records_invalid, validation_notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (table_name, datetime.now().isoformat(), records_checked, records_valid, records_invalid, notes))
+    
+    conn.commit()
+    conn.close()
+
+def cleanup_old_data():
+    """Remove duplicate entries and clean up old data."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute('''
+        DELETE FROM game_logs 
+        WHERE rowid NOT IN (
+            SELECT MIN(rowid) 
+            FROM game_logs 
+            GROUP BY player_id, game_id
+        )
+    ''')
+    
+    c.execute('''
+        DELETE FROM shot_data 
+        WHERE rowid NOT IN (
+            SELECT MIN(rowid) 
+            FROM shot_data 
+            GROUP BY player_id, game_id, shot_id
+        )
+    ''')
+    
+    ten_years_ago = (datetime.now().year - 10)
+    c.execute('DELETE FROM game_logs WHERE CAST(SUBSTR(season, 1, 4) AS INTEGER) < ?', (ten_years_ago,))
+    c.execute('DELETE FROM shot_data WHERE CAST(SUBSTR(season, 1, 4) AS INTEGER) < ?', (ten_years_ago,))
+    
+    conn.commit()
+    conn.close()
+
+def get_player_data_from_db(player_name, start_season=None, end_season=None):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(game_logs)")
+        db_columns = {row[1]: row[1] for row in cursor.fetchall()}
+        
+        select_columns = [col for col in db_columns.keys()]
+        query = f'''
+            SELECT {', '.join(select_columns)} FROM game_logs 
+            WHERE PLAYER_NAME = ? 
+        '''
+        params = [player_name]
+        
+        if start_season:
+            query += ' AND SEASON >= ?'
+            params.append(start_season)
+        if end_season:
+            query += ' AND SEASON <= ?'
+            params.append(end_season)
+        
+        query += ' ORDER BY GAME_DATE'
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        
+        if not df.empty:
+            df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
+            return df
+        return None
+    except Exception as e:
+        st.error(f"Database error: {str(e)}")
+        return None
+
+def save_player_data_to_db(df, player_name):
+    if df is None or df.empty:
+        return
+    
+    is_valid, message = validate_game_logs_data(df)
+    if not is_valid:
+        return
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            conn.close()
+            return
+        
+        player_id = player_dict[0]['id']
+        
+        df_to_save = df.copy()
+        
+        df_to_save['PLAYER_ID'] = player_id
+        df_to_save['PLAYER_NAME'] = player_name
+        df_to_save['DATA_SOURCE'] = 'NBA API'
+        df_to_save['LAST_UPDATED'] = datetime.now().isoformat()
+        
+        if 'GAME_ID' not in df_to_save.columns:
+            df_to_save['GAME_ID'] = df_to_save.index.astype(str)
+        
+        if 'TEAM_ABBREVIATION' not in df_to_save.columns:
+            df_to_save['TEAM_ABBREVIATION'] = 'UNK'
+            
+        if 'MATCHUP' not in df_to_save.columns:
+            df_to_save['MATCHUP'] = 'Unknown'
+            
+        if 'GAME_DATE' not in df_to_save.columns:
+            df_to_save['GAME_DATE'] = pd.Timestamp.now()
+            
+        if 'SEASON' not in df_to_save.columns:
+            df_to_save['SEASON'] = '2023-24'
+        
+        columns = {
+            'PLAYER_ID': 'player_id',
+            'PLAYER_NAME': 'player_name',
+            'GAME_ID': 'game_id',
+            'GAME_DATE': 'game_date',
+            'SEASON': 'season',
+            'MATCHUP': 'matchup',
+            'TEAM_ABBREVIATION': 'team_abbreviation',
+            'PTS': 'pts',
+            'REB': 'reb',
+            'AST': 'ast',
+            'MIN': 'min',
+            'FGM': 'fgm',
+            'FGA': 'fga',
+            'FG3M': 'fg3m',
+            'FG3A': 'fg3a',
+            'FTM': 'ftm',
+            'FTA': 'fta',
+            'OREB': 'oreb',
+            'DREB': 'dreb',
+            'STL': 'stl',
+            'BLK': 'blk',
+            'TOV': 'tov',
+            'PF': 'pf',
+            'PLUS_MINUS': 'plus_minus',
+            'DATA_SOURCE': 'data_source',
+            'LAST_UPDATED': 'last_updated'
+        }
+        
+        df_final = pd.DataFrame()
+        for db_col, api_col in columns.items():
+            if api_col in df_to_save.columns:
+                df_final[db_col] = df_to_save[api_col]
+            elif db_col in df_to_save.columns:
+                df_final[db_col] = df_to_save[db_col]
+            else:
+                df_final[db_col] = None
+        
+        existing_data = pd.read_sql_query(
+            "SELECT player_id, game_id FROM game_logs WHERE player_id = ?",
+            conn,
+            params=[player_id]
+        )
+        
+        if not existing_data.empty:
+            existing_keys = set(zip(existing_data['player_id'], existing_data['game_id']))
+            new_data = df_final[~df_final.apply(lambda x: (x['player_id'], x['game_id']) in existing_keys, axis=1)]
+            
+            if not new_data.empty:
+                new_data.to_sql('game_logs', conn, if_exists='append', index=False)
+                log_data_validation('game_logs', len(new_data), len(new_data), 0, "New data added")
+        else:
+            df_final.to_sql('game_logs', conn, if_exists='append', index=False)
+            log_data_validation('game_logs', len(df_final), len(df_final), 0, "New data added")
+        
+        conn.close()
+    except Exception:
+        if 'conn' in locals():
+            conn.close()
+
+def get_shot_data_from_db(player_name, season):
+    """Retrieve shot data from the database with enhanced error handling."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        
+        query = '''
+            SELECT * FROM shot_data 
+            WHERE player_name = ? AND season = ?
+        '''
+        
+        df = pd.read_sql_query(query, conn, params=[player_name, season])
+        conn.close()
+        
+        return df if not df.empty else None
+    except Exception as e:
+        st.error(f"Database error: {str(e)}")
+        return None
+
+def save_shot_data_to_db(df, player_name, season):
+    if df is None or df.empty:
+        return
+    
+    is_valid, _ = validate_shot_data(df)
+    if not is_valid:
+        return
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            conn.close()
+            return
+        
+        player_id = player_dict[0]['id']
+        
+        df['PLAYER_ID'] = player_id
+        df['PLAYER_NAME'] = player_name
+        df['SEASON'] = season
+        df['DATA_SOURCE'] = 'NBA API'
+        df['LAST_UPDATED'] = datetime.now().isoformat()
+        
+        if 'SHOT_ID' not in df.columns:
+            df['SHOT_ID'] = df.index.astype(str)
+        
+        columns = {
+            'PLAYER_ID': 'PLAYER_ID',
+            'PLAYER_NAME': 'PLAYER_NAME',
+            'SEASON': 'SEASON',
+            'GAME_ID': 'GAME_ID',
+            'SHOT_ID': 'SHOT_ID',
+            'LOC_X': 'LOC_X',
+            'LOC_Y': 'LOC_Y',
+            'SHOT_DISTANCE': 'SHOT_DISTANCE',
+            'SHOT_TYPE': 'SHOT_TYPE',
+            'SHOT_MADE_FLAG': 'SHOT_MADE_FLAG',
+            'DATA_SOURCE': 'DATA_SOURCE',
+            'LAST_UPDATED': 'LAST_UPDATED'
+        }
+        
+        df_to_save = df[list(columns.keys())].rename(columns=columns)
+        
+        df_to_save.to_sql('shot_data', conn, if_exists='append', index=False)
+        
+        log_data_validation('shot_data', len(df), len(df), 0, "New data added")
+        
+        conn.close()
+    except Exception:
+        if 'conn' in locals():
+            conn.close()
+
+init_db()
+fix_column_names()
+cleanup_old_data()
 
 st.set_page_config(layout="wide")
+
+def normalize_name(name):
+    return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('ASCII').lower()
 
 @st.cache_data
 def get_player_list():
     player_list = players.get_active_players()
-    return sorted([player['full_name'] for player in player_list])
+    normalized_players = []
+    for player in player_list:
+        original_name = player['full_name']
+        normalized_name = normalize_name(original_name)
+        normalized_players.append({
+            'original_name': original_name,
+            'normalized_name': normalized_name
+        })
+    return sorted(normalized_players, key=lambda x: x['normalized_name'])
+
+def find_player_by_name(search_name):
+    normalized_search = normalize_name(search_name)
+    player_list = get_player_list()
+    for player in player_list:
+        if player['normalized_name'] == normalized_search:
+            return player['original_name']
+    return None
 
 @st.cache_data
 def get_player_rookie_and_last_season(player_name):
+    normalized_name = find_player_by_name(player_name)
+    if normalized_name:
+        player_name = normalized_name
     player_dict = players.find_players_by_full_name(player_name)
     if not player_dict:
         return None, None
@@ -42,56 +536,112 @@ def get_player_rookie_and_last_season(player_name):
         return rookie_season, last_season
     return None, None
 
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_player_data(player_name, start_season=None, end_season=None):
-    df = get_all_game_logs(player_name, '2010-11', '2024-25')
-    if df.empty:
-        st.error("No data found for this player")
-        return None
-    df = df.sort_values('GAME_DATE')
-    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-    if 'SEASON' in df.columns:
-        seasons = sorted(df['SEASON'].unique())
-        true_start = seasons[0]
-        true_end = seasons[-1]
-        df = df[df['SEASON'].between(true_start, true_end)]
-    return df
+    normalized_name = find_player_by_name(player_name)
+    if normalized_name:
+        player_name = normalized_name
+    try:
+        df = get_player_data_from_db(player_name, start_season, end_season)
+        
+        required_columns = ['MATCHUP', 'GAME_DATE', 'SEASON', 'PTS', 'REB', 'AST']
+        if df is not None and not df.empty:
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                df = None
+        
+        if df is None or df.empty:
+            df = get_all_game_logs(player_name, '2010-11', '2024-25')
+            if df.empty:
+                st.error("No data found for this player")
+                return None
+            
+            df = df.sort_values('GAME_DATE')
+            df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
+            if 'SEASON' in df.columns:
+                seasons = sorted(df['SEASON'].unique())
+                true_start = seasons[0]
+                true_end = seasons[-1]
+                df = df[df['SEASON'].between(true_start, true_end)]
+            
+            save_player_data_to_db(df, player_name)
+        
+        return df
+    except Exception:
+        df = get_all_game_logs(player_name, '2010-11', '2024-25')
+        if df.empty:
+            st.error("No data found for this player")
+            return None
+        
+        df = df.sort_values('GAME_DATE')
+        df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
+        if 'SEASON' in df.columns:
+            seasons = sorted(df['SEASON'].unique())
+            true_start = seasons[0]
+            true_end = seasons[-1]
+            df = df[df['SEASON'].between(true_start, true_end)]
+        
+        save_player_data_to_db(df, player_name)
+        
+        return df
 
 @st.cache_data
 def get_shot_data(player_name, season='2024-25', max_retries=3):
-    player_dict = players.find_players_by_full_name(player_name)
-    if not player_dict:
-        return None
+    normalized_name = find_player_by_name(player_name)
+    if normalized_name:
+        player_name = normalized_name
+    shot_data = get_shot_data_from_db(player_name, season)
     
-    player_id = player_dict[0]['id']
+    if shot_data is None or shot_data.empty:
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            return None
+        
+        player_id = player_dict[0]['id']
+        
+        for attempt in range(max_retries):
+            try:
+                shot_data = shotchartdetail.ShotChartDetail(
+                    player_id=player_id,
+                    team_id=0,
+                    season_nullable=season,
+                    context_measure_simple='FGA',
+                    season_type_all_star='Regular Season',
+                    timeout=30
+                )
+                df = shot_data.get_data_frames()[0]
+                
+                save_shot_data_to_db(df, player_name, season)
+                
+                return df
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    st.warning(f"Attempt {attempt + 1} failed. Retrying...")
+                    time.sleep(2)
+                else:
+                    st.error(f"Failed to fetch shot data after {max_retries} attempts: {e}")
+                    return None
     
-    for attempt in range(max_retries):
-        try:
-            shot_data = shotchartdetail.ShotChartDetail(
-                player_id=player_id,
-                team_id=0,
-                season_nullable=season,
-                context_measure_simple='FGA',
-                season_type_all_star='Regular Season',
-                timeout=30
-            )
-            df = shot_data.get_data_frames()[0]
-            return df
-        except Exception as e:
-            if attempt < max_retries - 1:
-                st.warning(f"Attempt {attempt + 1} failed. Retrying...")
-                time.sleep(2)
-            else:
-                st.error(f"Failed to fetch shot data after {max_retries} attempts: {e}")
-                return None
+    return shot_data
 
 st.title("NBA Player Performance Predictor")
 st.markdown("### Visualize player stats and get performance predictions")
 
-player_list = ["Select a player..."] + get_player_list()
-
 st.sidebar.header("Player Selection")
-player_name = st.sidebar.selectbox("Select Player", player_list, index=0, key="player_select")
+player_list = get_player_list()
+player_names = ["Select a player..."] + [p['original_name'] for p in player_list]
+player_name = st.sidebar.selectbox(
+    "Select Player",
+    options=player_names,
+    index=0,
+    key="player_select",
+    help="Type to search. Special characters will be matched (e.g., 'Doncic' will match 'Dončić')"
+)
+
+if player_name and player_name != "Select a player...":
+    normalized_name = find_player_by_name(player_name)
+    if normalized_name:
+        player_name = normalized_name
 
 df = None
 if player_name and player_name != "Select a player...":
@@ -104,11 +654,9 @@ if df is not None:
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Next Game & Matchup", "Game-by-Game Performance", "Shot Distance Analysis", "Player Comparison"])
     
-    # Store the active tab in session state
     if 'active_tab' not in st.session_state:
         st.session_state.active_tab = "Overview"
     
-    # Update active tab based on user selection
     if tab1:
         st.session_state.active_tab = "Overview"
     elif tab2:
@@ -120,7 +668,6 @@ if df is not None:
     elif tab5:
         st.session_state.active_tab = "Player Comparison"
     
-    # Show content based on active tab
     if st.session_state.active_tab == "Overview":
         with tab1:
             season_data = df_clean[df_clean['SEASON'] == available_seasons[0]]
@@ -173,10 +720,8 @@ if df is not None:
             st.subheader("Advanced Metrics")
             col1, col2, col3, col4 = st.columns(4)
             
-            # Calculate PER (corrected formula)
             with col1:
                 if all(col in season_data.columns for col in ['PTS', 'FGM', 'FGA', 'FTM', 'FTA', 'OREB', 'DREB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'MIN']):
-                    # PER calculation (simplified version)
                     per = (season_data['PTS'].mean() * 1.0 + 
                           season_data['FGM'].mean() * 0.5 - 
                           season_data['FGA'].mean() * 0.5 + 
@@ -191,7 +736,6 @@ if df is not None:
                           season_data['PF'].mean() * 0.5)
                     st.metric("PER", f"{per:.1f}")
             
-            # Calculate Usage Rate
             with col2:
                 if all(col in season_data.columns for col in ['FGA', 'FTA', 'TOV', 'MIN']):
                     possessions = season_data['FGA'].sum() + 0.44 * season_data['FTA'].sum() + season_data['TOV'].sum()
@@ -201,7 +745,6 @@ if df is not None:
                         usg_rate = (possessions / possessions_per_game) * 100
                         st.metric("Usage Rate", f"{usg_rate:.1f}%")
             
-            # Calculate True Shooting %
             with col3:
                 if all(col in season_data.columns for col in ['PTS', 'FGA', 'FTA']):
                     fga_fta = season_data['FGA'].sum() + 0.44 * season_data['FTA'].sum()
@@ -209,10 +752,8 @@ if df is not None:
                         ts_pct = season_data['PTS'].sum() / (2 * fga_fta) * 100
                         st.metric("True Shooting %", f"{ts_pct:.1f}%")
             
-            # Calculate Box Plus/Minus
             with col4:
                 if all(col in season_data.columns for col in ['PTS', 'AST', 'REB', 'STL', 'BLK', 'TOV', 'PF']):
-                    # Simplified BPM calculation
                     bpm = (season_data['PTS'].mean() * 0.274 + 
                           season_data['AST'].mean() * 0.7 + 
                           season_data['REB'].mean() * 0.5 + 
@@ -243,11 +784,9 @@ if df is not None:
             
             st.subheader("Home vs Away Performance")
             
-            # Split data into home and away games
             home_games = season_data[season_data['MATCHUP'].str.contains('vs')]
             away_games = season_data[season_data['MATCHUP'].str.contains('@')]
             
-            # Points, Rebounds, Assists
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 home_pts = home_games['PTS'].mean()
@@ -266,7 +805,6 @@ if df is not None:
                 away_min = away_games['MIN'].mean()
                 st.metric("Minutes (Home/Away)", f"{home_min:.1f}/{away_min:.1f}", f"{home_min - away_min:+.1f}")
             
-            # Shooting Percentages
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 if 'FGM' in home_games.columns and 'FGA' in home_games.columns:
@@ -724,7 +1262,7 @@ if df is not None:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
                 avg_distance = shot_data['SHOT_DISTANCE'].mean()
@@ -738,10 +1276,10 @@ if df is not None:
                     st.metric(
                         "Most Efficient Range",
                         f"{best_range} ft",
-                        f"Shoots {best_fg_pct:.1f}% from this distance"
+                        f"{best_fg_pct:.1f}%"
                     )
                 else:
-                    st.metric("Most Efficient Range", "N/A", "Not enough shot attempts")
+                    st.metric("Most Efficient Range", "N/A", "Not enough attempts")
             
             with col3:
                 if not distance_stats.empty:
@@ -751,10 +1289,10 @@ if df is not None:
                     st.metric(
                         "Favorite Shooting Range",
                         f"{most_common} ft",
-                        f"{most_attempts} attempts, {most_fg_pct:.1f}% shooting"
+                        f"{most_attempts} shots"
                     )
                 else:
-                    st.metric("Favorite Shooting Range", "N/A", "No shot data available")
+                    st.metric("Favorite Shooting Range", "N/A", "No data")
             
             with col4:
                 total_shots = len(shot_data)
@@ -763,12 +1301,23 @@ if df is not None:
                 st.metric(
                     "Overall Shooting",
                     f"{fg_pct:.1f}%",
-                    f"{made_shots}/{total_shots} shots made"
+                    f"{made_shots}/{total_shots}"
                 )
+            
+            with col5:
+                made_shots_data = shot_data[shot_data['SHOT_MADE_FLAG'] == 1]
+                if not made_shots_data.empty:
+                    farthest_made = made_shots_data.loc[made_shots_data['SHOT_DISTANCE'].idxmax()]
+                    st.metric(
+                        "Farthest Shot Made",
+                        f"{farthest_made['SHOT_DISTANCE']:.1f} ft",
+                        f"{farthest_made['SHOT_TYPE']}"
+                    )
+                else:
+                    st.metric("Farthest Shot Made", "N/A", "No made shots")
             
             st.subheader("Shot Type Analysis")
             
-            # Aggregate data for 2PT vs 3PT shots
             shot_data['Shot_Category'] = shot_data['SHOT_TYPE'].apply(lambda x: '3PT' if '3PT' in x else '2PT')
             shot_category_stats = shot_data.groupby('Shot_Category').agg({
                 'SHOT_MADE_FLAG': ['count', 'mean'],
@@ -778,20 +1327,17 @@ if df is not None:
             shot_category_stats.columns = ['Shot_Category', 'Attempts', 'FG%', 'Avg_Distance']
             shot_category_stats['FG%'] = shot_category_stats['FG%'] * 100
             
-            # Fill NaN values with 0
             shot_category_stats['FG%'] = shot_category_stats['FG%'].fillna(0)
             shot_category_stats['Avg_Distance'] = shot_category_stats['Avg_Distance'].fillna(0)
-            
-            # Create the pie chart
+
             fig_types = go.Figure()
             
-            # Add pie chart for shot distribution
             fig_types.add_trace(go.Pie(
                 labels=shot_category_stats['Shot_Category'],
                 values=shot_category_stats['Attempts'],
                 hole=0.4,
                 marker=dict(
-                    colors=['#9B6B9E', '#E6A4B4'],  # Purple for 2PT, Pink for 3PT
+                    colors=['#9B6B9E', '#E6A4B4'],
                     line=dict(color='white', width=2)
                 ),
                 textinfo='label+percent',
@@ -800,7 +1346,6 @@ if df is not None:
                             "Attempts: %{value}<extra></extra>"
             ))
             
-            # Update layout
             fig_types.update_layout(
                 showlegend=True,
                 legend=dict(
@@ -824,10 +1369,8 @@ if df is not None:
             
             st.plotly_chart(fig_types, use_container_width=True)
             
-            # Add some space
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Display FG% in a clean way
             col1, col2 = st.columns(2)
             
             with col1:
@@ -870,10 +1413,8 @@ if df is not None:
                     shot_category_stats[shot_category_stats['Shot_Category'] == '3PT']['Avg_Distance'].iloc[0]
                 ), unsafe_allow_html=True)
             
-            # Add more space before the guide
             st.markdown("<br><br>", unsafe_allow_html=True)
             
-            # Move the shot analysis guide to the bottom
             st.markdown("""
             <div style="background-color: rgba(240, 242, 246, 0.05); padding: 15px; border-radius: 8px; margin-top: 20px; color: #262730;">
                 <details>
@@ -889,7 +1430,6 @@ if df is not None:
             </div>
             """, unsafe_allow_html=True)
             
-            # After the existing shot type analysis
             st.markdown("<br>", unsafe_allow_html=True)
         else:
             st.warning("Shot data not available for this player.")
@@ -915,7 +1455,7 @@ if df is not None:
             st.subheader("Compare With")
             compare_players = st.multiselect(
                 "Select Players to Compare",
-                options=[p for p in player_list if p != player_name],
+                options=[p['original_name'] for p in player_list if p['original_name'] != player_name],
                 default=[],
                 key="compare_players_select"
             )
@@ -969,15 +1509,12 @@ if df is not None:
                 
                 st.subheader("Advanced Stats Comparison")
                 
-                # Initialize empty list for stats
                 stats = []
                 
-                # For each player, get their stats
                 for player in all_players:
                     if player in season_data_dict:
                         data = season_data_dict[player]
                         
-                        # Get basic stats
                         player_stats = {
                             'Player': player,
                             'PTS': round(data['PTS'].mean(), 1),
@@ -988,7 +1525,6 @@ if df is not None:
                             'BLK': round(data['BLK'].mean(), 1)
                         }
                         
-                        # Get shooting percentages from totals
                         if 'FGM' in data.columns and 'FGA' in data.columns:
                             fg_pct = (data['FGM'].sum() / data['FGA'].sum()) * 100
                             player_stats['FG%'] = f"{round(fg_pct, 1)}%"
@@ -1003,22 +1539,18 @@ if df is not None:
                         
                         stats.append(player_stats)
                 
-                # Create and display DataFrame
                 if stats:
                     df = pd.DataFrame(stats)
                     st.dataframe(df, use_container_width=True, hide_index=True)
                 
                 st.subheader("Game Score Comparison")
                 
-                # Initialize empty list for game scores
                 game_scores = []
                 
-                # For each player, calculate game score
                 for player in all_players:
                     if player in season_data_dict:
                         data = season_data_dict[player]
                         
-                        # Calculate game score
                         game_score = data['PTS']
                         if 'FGM' in data.columns:
                             game_score += 0.4 * data['FGM']
@@ -1048,8 +1580,7 @@ if df is not None:
                             'Average Game Score': round(game_score.mean(), 1),
                             'Best Game Score': round(game_score.max(), 1)
                         })
-                
-                # Create and display DataFrame
+                    
                 if game_scores:
                     game_score_df = pd.DataFrame(game_scores)
                     st.dataframe(game_score_df, use_container_width=True, hide_index=True)

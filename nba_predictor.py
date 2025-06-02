@@ -346,7 +346,6 @@ def get_head_to_head_stats(player_name, opponent_team, season='2024-25', max_ret
             
         opponent_name = opponent_team['full_name'] if isinstance(opponent_team, dict) else opponent_team
         
-        # Convert opponent name to abbreviation if it's a full name
         team_abbrev_to_full = {
             'ATL': 'Atlanta Hawks', 'BOS': 'Boston Celtics', 'BKN': 'Brooklyn Nets',
             'CHA': 'Charlotte Hornets', 'CHI': 'Chicago Bulls', 'CLE': 'Cleveland Cavaliers',
@@ -360,13 +359,10 @@ def get_head_to_head_stats(player_name, opponent_team, season='2024-25', max_ret
             'TOR': 'Toronto Raptors', 'UTA': 'Utah Jazz', 'WAS': 'Washington Wizards'
         }
         
-        # Create reverse mapping
         full_to_abbrev = {v: k for k, v in team_abbrev_to_full.items()}
         
-        # Get opponent abbreviation
         opponent_abbrev = full_to_abbrev.get(opponent_name, opponent_name)
         
-        # Match using the abbreviation
         h2h_games = all_logs[all_logs['MATCHUP'].str.contains(opponent_abbrev, case=False)]
         if h2h_games.empty:
             return None
