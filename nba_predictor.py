@@ -433,11 +433,12 @@ def get_team_defensive_stats(team_name, season='2024-25'):
 
 def fetch_schedule(cache_duration_hours=24):
     cache_file = 'schedule_cache.pkl'
+    current_date = datetime.now()  # Define current_date at the very beginning
     
     if os.path.exists(cache_file):
         try:
             cache_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
-            if datetime.now() - cache_time < timedelta(hours=cache_duration_hours):
+            if current_date - cache_time < timedelta(hours=cache_duration_hours):
                 with open(cache_file, 'rb') as f:
                     return pickle.load(f)
         except Exception as e:
@@ -445,38 +446,82 @@ def fetch_schedule(cache_duration_hours=24):
     
     print("Fetching new schedule...")
     try:
-        current_date = datetime.now()
         schedule = []
         
-        for i in range(7):
-            target_date = current_date + timedelta(days=i)
+        # Try playoff schedule first if in playoff months
+        if current_date.month in [4, 5, 6]:
+            print("NBA Playoffs in progress - checking playoff schedule")
             try:
                 scoreboard = scoreboardv2.ScoreboardV2(
-                    game_date=target_date.strftime('%m/%d/%Y'),
+                    game_date=current_date.strftime('%m/%d/%Y'),
                     league_id='00',
-                    day_offset=0
+                    day_offset=0,
+                    season_type='Playoffs'
                 )
                 
                 games = scoreboard.get_data_frames()[0]
                 if not games.empty:
                     for _, game in games.iterrows():
-                        schedule.append({
-                            'game_date': target_date,
-                            'home_team_id': game['HOME_TEAM_ID'],
-                            'away_team_id': game['VISITOR_TEAM_ID'],
-                            'home_team_name': game['HOME_TEAM_NAME'],
-                            'away_team_name': game['VISITOR_TEAM_NAME']
-                        })
-                
-                time.sleep(1)
+                        try:
+                            home_team = teams.find_team_name_by_id(game['HOME_TEAM_ID'])
+                            away_team = teams.find_team_name_by_id(game['VISITOR_TEAM_ID'])
+                            
+                            if home_team and away_team:
+                                game_date = pd.to_datetime(game['GAME_DATE'])
+                                schedule.append({
+                                    'game_date': game_date,
+                                    'home_team_id': game['HOME_TEAM_ID'],
+                                    'away_team_id': game['VISITOR_TEAM_ID'],
+                                    'home_team_name': home_team['full_name'],
+                                    'away_team_name': away_team['full_name']
+                                })
+                        except Exception as e:
+                            print(f"Error processing game data: {e}")
+                            continue
             except Exception as e:
-                print(f"Error fetching games for {target_date.strftime('%Y-%m-%d')}: {e}")
-                continue
+                print(f"Error fetching playoff schedule: {e}")
+        
+        if not schedule:
+            print("Checking regular season schedule")
+            for i in range(7):  # Look ahead 7 days
+                target_date = current_date + timedelta(days=i)
+                try:
+                    scoreboard = scoreboardv2.ScoreboardV2(
+                        game_date=target_date.strftime('%m/%d/%Y'),
+                        league_id='00',
+                        day_offset=0
+                    )
+                    
+                    games = scoreboard.get_data_frames()[0]
+                    if not games.empty:
+                        for _, game in games.iterrows():
+                            try:
+                                home_team = teams.find_team_name_by_id(game['HOME_TEAM_ID'])
+                                away_team = teams.find_team_name_by_id(game['VISITOR_TEAM_ID'])
+                                
+                                if home_team and away_team:
+                                    game_date = pd.to_datetime(game['GAME_DATE'])
+                                    schedule.append({
+                                        'game_date': game_date,
+                                        'home_team_id': game['HOME_TEAM_ID'],
+                                        'away_team_id': game['VISITOR_TEAM_ID'],
+                                        'home_team_name': home_team['full_name'],
+                                        'away_team_name': away_team['full_name']
+                                    })
+                            except Exception as e:
+                                print(f"Error processing game data: {e}")
+                                continue
+                    
+                    time.sleep(1)  # Rate limiting
+                except Exception as e:
+                    print(f"Error fetching games for {target_date.strftime('%Y-%m-%d')}: {e}")
+                    continue
         
         if not schedule:
             print("No games found in schedule")
             return []
         
+        # Remove duplicates and sort by date
         schedule = list({(game['game_date'], game['home_team_id'], game['away_team_id']): game 
                         for game in schedule}.values())
         schedule.sort(key=lambda x: x['game_date'])
@@ -665,37 +710,45 @@ def find_next_game(schedule, team_id):
     if not schedule or not team_id:
         return None
     
-    current_date = datetime.now()
-    
-    for game in schedule:
-        game_date = game['game_date']
-        if game_date > current_date and (game['home_team_id'] == team_id or game['away_team_id'] == team_id):
-            home_team_info = teams.find_team_name_by_id(game['home_team_id'])
-            away_team_info = teams.find_team_name_by_id(game['away_team_id'])
-            
-            if not home_team_info or not away_team_info:
-                continue
+    try:
+        # Get current date at the start of the function
+        current_date = datetime.now()
+        
+        # Sort schedule by game date to ensure we find the next game
+        sorted_schedule = sorted(schedule, key=lambda x: x['game_date'])
+        
+        for game in sorted_schedule:
+            game_date = game['game_date']
+            if game_date > current_date and (game['home_team_id'] == team_id or game['away_team_id'] == team_id):
+                home_team_info = teams.find_team_name_by_id(game['home_team_id'])
+                away_team_info = teams.find_team_name_by_id(game['away_team_id'])
                 
-            home_abbr = home_team_info.get('abbreviation', '') if isinstance(home_team_info, dict) else home_team_info
-            away_abbr = away_team_info.get('abbreviation', '') if isinstance(away_team_info, dict) else away_team_info
-            
-            if not home_abbr or not away_abbr:
-                continue
+                if not home_team_info or not away_team_info:
+                    continue
+                    
+                home_abbr = home_team_info.get('abbreviation', '') if isinstance(home_team_info, dict) else home_team_info
+                away_abbr = away_team_info.get('abbreviation', '') if isinstance(away_team_info, dict) else away_team_info
                 
-            if game['home_team_id'] == team_id:
-                opponent_abbr = away_abbr
-                is_home_game = True
-            else:
-                opponent_abbr = home_abbr
-                is_home_game = False
-            
-            return {
-                'game_date': game_date,
-                'opponent_team_name': TEAM_ABBREV_TO_FULL.get(opponent_abbr, opponent_abbr),
-                'is_home_game': is_home_game
-            }
-    
-    return None
+                if not home_abbr or not away_abbr:
+                    continue
+                    
+                if game['home_team_id'] == team_id:
+                    opponent_abbr = away_abbr
+                    is_home_game = True
+                else:
+                    opponent_abbr = home_abbr
+                    is_home_game = False
+                
+                return {
+                    'game_date': game_date,
+                    'opponent_team_name': TEAM_ABBREV_TO_FULL.get(opponent_abbr, opponent_abbr),
+                    'is_home_game': is_home_game
+                }
+        
+        return None
+    except Exception as e:
+        print(f"Error in find_next_game: {e}")
+        return None
 
 def get_team_abbrev_from_logs_or_cache(player_id):
     try:

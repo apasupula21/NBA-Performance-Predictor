@@ -91,6 +91,34 @@ def init_db():
     ''')
     
     c.execute('''
+        CREATE TABLE IF NOT EXISTS career_trajectory (
+            PLAYER_ID INTEGER,
+            PLAYER_NAME TEXT,
+            SEASON TEXT,
+            PTS REAL,
+            REB REAL,
+            AST REAL,
+            MIN REAL,
+            FGM REAL,
+            FGA REAL,
+            FG3M REAL,
+            FG3A REAL,
+            FTM REAL,
+            FTA REAL,
+            TOV REAL,
+            STL REAL,
+            BLK REAL,
+            PLUS_MINUS REAL,
+            GAMES_PLAYED INTEGER,
+            FG_PCT REAL,
+            THREE_PCT REAL,
+            FT_PCT REAL,
+            LAST_UPDATED TEXT,
+            PRIMARY KEY (PLAYER_ID, SEASON)
+        )
+    ''')
+    
+    c.execute('''
         CREATE TABLE IF NOT EXISTS data_validation (
             ID INTEGER PRIMARY KEY AUTOINCREMENT,
             TABLE_NAME TEXT,
@@ -107,6 +135,8 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_game_logs_game_date ON game_logs(GAME_DATE)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_shot_data_player_name ON shot_data(PLAYER_NAME)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_shot_data_season ON shot_data(SEASON)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_career_trajectory_player_name ON career_trajectory(PLAYER_NAME)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_career_trajectory_season ON career_trajectory(SEASON)')
     
     conn.commit()
     conn.close()
@@ -488,6 +518,61 @@ def save_shot_data_to_db(df, player_name, season):
         if 'conn' in locals():
             conn.close()
 
+def get_career_trajectory_from_db(player_name):
+    """Retrieve career trajectory data from the database."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        query = '''
+            SELECT * FROM career_trajectory 
+            WHERE PLAYER_NAME = ?
+            ORDER BY SEASON
+        '''
+        df = pd.read_sql_query(query, conn, params=[player_name])
+        conn.close()
+        return df if not df.empty else None
+    except Exception as e:
+        st.error(f"Database error: {str(e)}")
+        return None
+
+def save_career_trajectory_to_db(df, player_name):
+    """Save career trajectory data to the database."""
+    if df is None or df.empty:
+        return
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        
+        player_dict = players.find_players_by_full_name(player_name)
+        if not player_dict:
+            conn.close()
+            return
+        
+        player_id = player_dict[0]['id']
+        
+        df_to_save = df.copy()
+        df_to_save['PLAYER_ID'] = player_id
+        df_to_save['PLAYER_NAME'] = player_name
+        df_to_save['LAST_UPDATED'] = datetime.now().isoformat()
+        
+        # Calculate shooting percentages
+        df_to_save['FG_PCT'] = (df_to_save['FGM'] / df_to_save['FGA'] * 100)
+        df_to_save['THREE_PCT'] = (df_to_save['FG3M'] / df_to_save['FG3A'] * 100)
+        df_to_save['FT_PCT'] = (df_to_save['FTM'] / df_to_save['FTA'] * 100)
+        
+        # Delete existing records for this player
+        c = conn.cursor()
+        c.execute('DELETE FROM career_trajectory WHERE PLAYER_ID = ?', (player_id,))
+        
+        # Save new data
+        df_to_save.to_sql('career_trajectory', conn, if_exists='append', index=False)
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"Error saving career trajectory data: {str(e)}")
+        if 'conn' in locals():
+            conn.close()
+
 init_db()
 fix_column_names()
 cleanup_old_data()
@@ -503,19 +588,42 @@ def get_player_list():
     normalized_players = []
     for player in player_list:
         original_name = player['full_name']
+        # Create multiple variations of the name for better matching
         normalized_name = normalize_name(original_name)
+        # Remove special characters but keep spaces
+        simplified_name = ''.join(c for c in original_name if c.isalnum() or c.isspace()).lower()
         normalized_players.append({
             'original_name': original_name,
-            'normalized_name': normalized_name
+            'normalized_name': normalized_name,
+            'simplified_name': simplified_name
         })
     return sorted(normalized_players, key=lambda x: x['normalized_name'])
 
 def find_player_by_name(search_name):
-    normalized_search = normalize_name(search_name)
+    if not search_name:
+        return None
+    
+    # Normalize the search input
+    search_name = search_name.lower()
+    search_name_no_special = ''.join(c for c in search_name if c.isalnum() or c.isspace())
+    
     player_list = get_player_list()
+    
+    # First try exact match
     for player in player_list:
-        if player['normalized_name'] == normalized_search:
+        if player['normalized_name'] == search_name or player['simplified_name'] == search_name:
             return player['original_name']
+    
+    # Then try partial match
+    matches = []
+    for player in player_list:
+        if (search_name in player['normalized_name'] or 
+            search_name_no_special in player['simplified_name']):
+            matches.append(player['original_name'])
+    
+    if matches:
+        return matches[0]  # Return the first match
+    
     return None
 
 @st.cache_data
@@ -629,13 +737,31 @@ st.markdown("### Visualize player stats and get performance predictions")
 
 st.sidebar.header("Player Selection")
 player_list = get_player_list()
+
+# Create a custom search function for the selectbox
+def search_players(search_term):
+    if not search_term:
+        return [p['original_name'] for p in player_list]
+    
+    search_term = search_term.lower()
+    search_term_no_special = ''.join(c for c in search_term if c.isalnum() or c.isspace())
+    
+    matches = []
+    for player in player_list:
+        if (search_term in player['normalized_name'] or 
+            search_term_no_special in player['simplified_name']):
+            matches.append(player['original_name'])
+    
+    return matches if matches else ["No matches found"]
+
 player_names = ["Select a player..."] + [p['original_name'] for p in player_list]
+
 player_name = st.sidebar.selectbox(
     "Select Player",
     options=player_names,
     index=0,
     key="player_select",
-    help="Type to search. Special characters will be matched (e.g., 'Doncic' will match 'Dončić')"
+    help="Type to search. Special characters will be matched automatically (e.g., 'Doncic' will match 'Dončić')"
 )
 
 if player_name and player_name != "Select a player...":
@@ -652,7 +778,7 @@ if df is not None:
     
     available_seasons = sorted(df_clean['SEASON'].unique(), reverse=True)
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Next Game & Matchup", "Game-by-Game Performance", "Shot Distance Analysis", "Player Comparison"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Overview", "Next Game & Matchup", "Game-by-Game Performance", "Shot Distance Analysis", "Career Trajectory", "Player Comparison"])
     
     if 'active_tab' not in st.session_state:
         st.session_state.active_tab = "Overview"
@@ -669,6 +795,8 @@ if df is not None:
     elif tab4:
         st.session_state.active_tab = "Shot Distance Analysis"
     elif tab5:
+        st.session_state.active_tab = "Career Trajectory"
+    elif tab6:
         st.session_state.active_tab = "Player Comparison"
     
     # Add season selector in sidebar
@@ -687,7 +815,7 @@ if df is not None:
             season_data = df_clean[df_clean['SEASON'] == st.session_state.selected_season]
             
             st.subheader(f"Season Averages - {st.session_state.selected_season}")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("Points", f"{season_data['PTS'].mean():.1f}")
             with col2:
@@ -696,6 +824,20 @@ if df is not None:
                 st.metric("Assists", f"{season_data['AST'].mean():.1f}")
             with col4:
                 st.metric("Minutes", f"{season_data['MIN'].mean():.1f}")
+            with col5:
+                teams = season_data['TEAM_ABBREVIATION'].unique()
+                if len(teams) > 1:
+                    # Create a compact display for the metric
+                    if len(teams) > 2:
+                        team_display = f"{teams[0]} → {teams[-1]}"
+                        full_sequence = " → ".join(teams)
+                        st.metric("Teams", team_display, help=f"Player was traded multiple times: {full_sequence}")
+                    else:
+                        team_display = " → ".join(teams)
+                        st.metric("Teams", team_display, help="Player was traded during the season")
+                else:
+                    team = teams[0] if not season_data.empty else "N/A"
+                    st.metric("Team", team)
             
             st.subheader(f"Shooting Efficiency - {st.session_state.selected_season}")
             col1, col2, col3, col4 = st.columns(4)
@@ -847,6 +989,140 @@ if df is not None:
                     efg_pct = ((season_data['FGM'].sum() + 0.5 * season_data['FG3M'].sum()) / season_data['FGA'].sum() * 100)
                     st.metric("Effective FG%", f"{efg_pct:.1f}%", help="Field goal percentage that accounts for 3-pointers being worth more than 2-pointers")
             
+            # Add Custom Stat Combinations section
+            st.subheader("Custom Stat Combinations")
+            st.markdown("""
+            Select from predefined statistical combinations to analyze player performance.
+            """)
+            
+            # Define preset combinations
+            preset_combinations = {
+                'Efficiency Score': {
+                    'name': 'Efficiency Score',
+                    'formula': lambda df: df['PTS'] + df['REB'] + df['AST'] - df['TOV'],
+                    'formula_str': 'PTS + REB + AST - TOV',
+                    'description': 'Combines scoring, rebounding, and playmaking while penalizing turnovers',
+                    'format': '{:.1f}'
+                },
+                'Defensive Impact': {
+                    'name': 'Defensive Impact',
+                    'formula': lambda df: df['STL'] + df['BLK'],
+                    'formula_str': 'STL + BLK',
+                    'description': 'Measures defensive contributions through steals and blocks',
+                    'format': '{:.1f}'
+                },
+                'Scoring Efficiency': {
+                    'name': 'Scoring Efficiency',
+                    'formula': lambda df: df['PTS'] / df['FGA'].replace(0, np.nan),
+                    'formula_str': 'PTS / FGA',
+                    'description': 'Points per field goal attempt',
+                    'format': '{:.3f}'
+                },
+                'Playmaking Impact': {
+                    'name': 'Playmaking Impact',
+                    'formula': lambda df: df['AST'] / df['TOV'].replace(0, np.nan),
+                    'formula_str': 'AST / TOV',
+                    'description': 'Assist to turnover ratio',
+                    'format': '{:.2f}'
+                },
+                'Overall Impact': {
+                    'name': 'Overall Impact',
+                    'formula': lambda df: df['PTS'] + df['REB'] + df['AST'] + df['STL'] + df['BLK'] - df['TOV'],
+                    'formula_str': 'PTS + REB + AST + STL + BLK - TOV',
+                    'description': 'Comprehensive measure of player impact across all major categories',
+                    'format': '{:.1f}'
+                }
+            }
+            
+            # Create dropdown for preset combinations
+            selected_combination = st.selectbox(
+                "Select Stat Combination",
+                options=list(preset_combinations.keys()),
+                help="Choose a predefined statistical combination to analyze"
+            )
+            
+            # Calculate and display the selected combination
+            if selected_combination:
+                combination = preset_combinations[selected_combination]
+                try:
+                    # Calculate the stat
+                    custom_stat = combination['formula'](season_data)
+                    avg_value = custom_stat.mean()
+                    
+                    # Display the metric
+                    st.metric(
+                        f"{combination['name']} ({combination['formula_str']})",
+                        combination['format'].format(avg_value),
+                        help=combination['description']
+                    )
+                    
+                    # Create visualization
+                    fig = go.Figure()
+                    
+                    fig.add_trace(go.Scatter(
+                        x=season_data['GAME_DATE'],
+                        y=custom_stat,
+                        mode='lines+markers',
+                        name=combination['name'],
+                        line=dict(width=2, color='#FF4B4B'),
+                        marker=dict(size=8),
+                        hovertemplate="<b>Date</b>: %{x|%b %d}<br>" +
+                                    f"<b>{combination['name']}</b>: %{{y:.1f}}<br>" +
+                                    "<b>Opponent</b>: %{text}<extra></extra>",
+                        text=season_data['MATCHUP']
+                    ))
+                    
+                    # Add rolling average
+                    window = 5
+                    rolling_avg = custom_stat.rolling(window=window, min_periods=1).mean()
+                    
+                    fig.add_trace(go.Scatter(
+                        x=season_data['GAME_DATE'],
+                        y=rolling_avg,
+                        mode='lines',
+                        name=f'{window}-Game Average',
+                        line=dict(width=2, color='#00CC96', dash='dash'),
+                        hovertemplate="<b>Date</b>: %{x|%b %d}<br>" +
+                                    f"<b>{window}-Game Average</b>: %{{y:.1f}}<extra></extra>"
+                    ))
+                    
+                    fig.update_layout(
+                        title=f"{combination['name']} Trend",
+                        xaxis_title="Date",
+                        yaxis_title="Value",
+                        hovermode='x unified',
+                        showlegend=True,
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        ),
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                except Exception as e:
+                    st.error(f"Error calculating custom stat: {str(e)}")
+            
+            st.markdown("""
+            <div style="background-color: rgba(240, 242, 246, 0.05); padding: 15px; border-radius: 8px; margin-top: 20px; color: #262730;">
+                <details>
+                    <summary style="color: white; font-weight: bold; cursor: pointer;">Tips for Creating Custom Stats</summary>
+                    <p style="color: rgba(255, 255, 255, 0.7); margin-top: 10px;">Here are some useful custom stat combinations:</p>
+                    <ul style="color: rgba(255, 255, 255, 0.7);">
+                        <li><b>Efficiency Score</b>: PTS + REB + AST - TOV</li>
+                        <li><b>Defensive Impact</b>: STL + BLK</li>
+                        <li><b>Scoring Efficiency</b>: PTS / FGA</li>
+                        <li><b>Playmaking Impact</b>: AST / TOV</li>
+                        <li><b>Overall Impact</b>: PTS + REB + AST + STL + BLK - TOV</li>
+                    </ul>
+                </details>
+            </div>
+            """, unsafe_allow_html=True)
+            
             st.subheader(f"Home vs Away Performance - {st.session_state.selected_season}")
             
             home_games = season_data[season_data['MATCHUP'].str.contains('vs')]
@@ -907,17 +1183,23 @@ if df is not None:
                 if not team_id:
                     st.warning("Could not find team information for the player.")
                 elif not schedule:
-                    st.warning("Could not fetch the schedule.")
+                    current_date = datetime.now()
+                    if current_date.month in [4, 5, 6]:
+                        st.info("No upcoming playoff games found in the schedule. The player's team may have been eliminated or the next game hasn't been scheduled yet.")
+                    else:
+                        st.info("No upcoming games found in the schedule. The NBA season may be in the offseason.")
                 elif not next_game:
-                    st.info("No upcoming games found in the schedule. The NBA season may be in the offseason.")
+                    st.info("No upcoming games found in the schedule for the next 7 days.")
                 else:
-                    opponent = next_game['opponent_team_name']
+                    opponent = next_game.get('opponent_team_name')
                     if not opponent:
                         st.warning("Could not determine opponent information.")
                     else:
-                        game_date = next_game['game_date'].strftime('%B %d, %Y')
-                        location = "Home" if next_game['is_home_game'] else "Away"
-                        st.write(f"**Next Game**: {location} vs {opponent} on {game_date}")
+                        game_date = next_game.get('game_date', datetime.now()).strftime('%B %d, %Y')
+                        location = "Home" if next_game.get('is_home_game', False) else "Away"
+                        current_date = datetime.now()
+                        game_type = "Playoff" if current_date.month in [4, 5, 6] else "Regular Season"
+                        st.write(f"**Next Game**: {game_type} {location} vs {opponent} on {game_date}")
                         
                         team_stats_df = load_team_defense_data()
                         prediction = predict_against_opponent(player_name, opponent, season_data, model, team_stats_df)
@@ -1552,6 +1834,418 @@ if df is not None:
             st.warning(f"Shot data not available for {st.session_state.selected_season}.")
     
     with tab5:
+        st.subheader("Career Trajectory")
+        
+        # Try to get career trajectory data from database first
+        career_stats = get_career_trajectory_from_db(player_name)
+        
+        # If not in database, calculate and save it
+        if career_stats is None:
+            # Calculate career averages by season
+            career_stats = df_clean.groupby('SEASON').agg({
+                'PTS': 'mean',
+                'REB': 'mean',
+                'AST': 'mean',
+                'MIN': 'mean',
+                'FGM': 'mean',
+                'FGA': 'mean',
+                'FG3M': 'mean',
+                'FG3A': 'mean',
+                'FTM': 'mean',
+                'FTA': 'mean',
+                'TOV': 'mean',
+                'STL': 'mean',
+                'BLK': 'mean',
+                'PLUS_MINUS': 'mean',
+                'GAME_DATE': 'count'
+            }).reset_index()
+            
+            # Rename GAME_DATE to GAMES_PLAYED
+            career_stats = career_stats.rename(columns={'GAME_DATE': 'GAMES_PLAYED'})
+            
+            # Save to database
+            save_career_trajectory_to_db(career_stats, player_name)
+        
+        # Sort seasons chronologically
+        career_stats['SEASON'] = career_stats['SEASON'].astype(str)
+        career_stats = career_stats.sort_values('SEASON')
+        
+        # Calculate shooting percentages if not already in database
+        if 'FG_PCT' not in career_stats.columns:
+            career_stats['FG_PCT'] = (career_stats['FGM'] / career_stats['FGA'] * 100)
+            career_stats['THREE_PCT'] = (career_stats['FG3M'] / career_stats['FG3A'] * 100)
+            career_stats['FT_PCT'] = (career_stats['FTM'] / career_stats['FTA'] * 100)
+        
+        # Create main stats trajectory
+        fig_main = go.Figure()
+        
+        fig_main.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['PTS'],
+            mode='lines+markers',
+            name='Points',
+            line=dict(width=2, color='#FF4B4B'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>Points</b>: %{y:.1f}<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_main.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['REB'],
+            mode='lines+markers',
+            name='Rebounds',
+            line=dict(width=2, color='#00CC96'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>Rebounds</b>: %{y:.1f}<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_main.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['AST'],
+            mode='lines+markers',
+            name='Assists',
+            line=dict(width=2, color='#636EFA'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>Assists</b>: %{y:.1f}<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_main.update_layout(
+            title=f"{player_name}'s Career Trajectory - Main Stats",
+            xaxis_title="Season",
+            yaxis_title="Average",
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            height=500
+        )
+        
+        st.plotly_chart(fig_main, use_container_width=True)
+        
+        # Create shooting percentages trajectory
+        fig_shooting = go.Figure()
+        
+        fig_shooting.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['FG_PCT'],
+            mode='lines+markers',
+            name='FG%',
+            line=dict(width=2, color='#FF4B4B'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>FG%</b>: %{y:.1f}%<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_shooting.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['THREE_PCT'],
+            mode='lines+markers',
+            name='3P%',
+            line=dict(width=2, color='#00CC96'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>3P%</b>: %{y:.1f}%<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_shooting.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['FT_PCT'],
+            mode='lines+markers',
+            name='FT%',
+            line=dict(width=2, color='#636EFA'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>FT%</b>: %{y:.1f}%<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_shooting.update_layout(
+            title=f"{player_name}'s Career Trajectory - Shooting Percentages",
+            xaxis_title="Season",
+            yaxis_title="Percentage",
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            height=500
+        )
+        
+        st.plotly_chart(fig_shooting, use_container_width=True)
+        
+        # Create advanced stats trajectory
+        fig_advanced = go.Figure()
+        
+        fig_advanced.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['TOV'],
+            mode='lines+markers',
+            name='Turnovers',
+            line=dict(width=2, color='#FF4B4B'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>Turnovers</b>: %{y:.1f}<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_advanced.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['STL'],
+            mode='lines+markers',
+            name='Steals',
+            line=dict(width=2, color='#00CC96'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>Steals</b>: %{y:.1f}<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_advanced.add_trace(go.Scatter(
+            x=career_stats['SEASON'],
+            y=career_stats['BLK'],
+            mode='lines+markers',
+            name='Blocks',
+            line=dict(width=2, color='#636EFA'),
+            marker=dict(size=8),
+            hovertemplate="<b>Season</b>: %{x}<br>" +
+                        "<b>Blocks</b>: %{y:.1f}<br>" +
+                        "<b>Games Played</b>: %{customdata}<extra></extra>",
+            customdata=career_stats['GAMES_PLAYED']
+        ))
+        
+        fig_advanced.update_layout(
+            title=f"{player_name}'s Career Trajectory - Advanced Stats",
+            xaxis_title="Season",
+            yaxis_title="Average",
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            height=500
+        )
+        
+        st.plotly_chart(fig_advanced, use_container_width=True)
+        
+        # Add career progression metrics
+        st.subheader("Career Progression Metrics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Find the index of the selected season
+            selected_season_idx = career_stats[career_stats['SEASON'] == st.session_state.selected_season].index[0]
+            if selected_season_idx > 0:  # If there is a previous season
+                selected_season_data = career_stats.iloc[selected_season_idx]
+                prev_season_data = career_stats.iloc[selected_season_idx - 1]
+                
+                pts_improvement = selected_season_data['PTS'] - prev_season_data['PTS']
+                delta_color = "normal" if pts_improvement > 0 else "inverse" if pts_improvement < 0 else "off"
+                st.metric(
+                    "Points Improvement",
+                    f"{pts_improvement:+.1f}",
+                    f"vs {prev_season_data['SEASON']}",
+                    delta_color=delta_color
+                )
+            else:
+                st.metric("Points Improvement", "N/A", "No previous season")
+        
+        with col2:
+            if selected_season_idx > 0:
+                fg_improvement = selected_season_data['FG_PCT'] - prev_season_data['FG_PCT']
+                delta_color = "normal" if fg_improvement > 0 else "inverse" if fg_improvement < 0 else "off"
+                st.metric(
+                    "FG% Improvement",
+                    f"{fg_improvement:+.1f}%",
+                    f"vs {prev_season_data['SEASON']}",
+                    delta_color=delta_color
+                )
+            else:
+                st.metric("FG% Improvement", "N/A", "No previous season")
+        
+        with col3:
+            if selected_season_idx > 0:
+                plus_minus_improvement = selected_season_data['PLUS_MINUS'] - prev_season_data['PLUS_MINUS']
+                delta_color = "normal" if plus_minus_improvement > 0 else "inverse" if plus_minus_improvement < 0 else "off"
+                st.metric(
+                    "Plus/Minus Improvement",
+                    f"{plus_minus_improvement:+.1f}",
+                    f"vs {prev_season_data['SEASON']}",
+                    delta_color=delta_color
+                )
+            else:
+                st.metric("Plus/Minus Improvement", "N/A", "No previous season")
+        
+        # Add peak season analysis
+        st.subheader("Peak Season Analysis")
+        
+        peak_season = career_stats.loc[career_stats['PTS'].idxmax()]
+        st.markdown(f"**Peak Scoring Season**: {peak_season['SEASON']} ({peak_season['PTS']:.1f} PPG)")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Points", f"{peak_season['PTS']:.1f}")
+            st.metric("Rebounds", f"{peak_season['REB']:.1f}")
+            st.metric("Assists", f"{peak_season['AST']:.1f}")
+        
+        with col2:
+            st.metric("FG%", f"{peak_season['FG_PCT']:.1f}%")
+            st.metric("3P%", f"{peak_season['THREE_PCT']:.1f}%")
+            st.metric("FT%", f"{peak_season['FT_PCT']:.1f}%")
+        
+        with col3:
+            st.metric("Steals", f"{peak_season['STL']:.1f}")
+            st.metric("Blocks", f"{peak_season['BLK']:.1f}")
+            st.metric("Plus/Minus", f"{peak_season['PLUS_MINUS']:+.1f}")
+        
+        # Add career trajectory analysis
+        st.subheader("Career Trajectory Analysis")
+        
+        # Calculate career averages (excluding SEASON column)
+        numeric_columns = career_stats.select_dtypes(include=[np.number]).columns
+        career_avg = career_stats[numeric_columns].mean()
+        
+        st.markdown("""
+        <style>
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: linear-gradient(145deg, rgba(255, 75, 75, 0.1), rgba(255, 75, 75, 0.05));
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 75, 75, 0.2);
+            transition: transform 0.2s;
+        }
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+        .stat-label {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .stat-value {
+            color: white;
+            font-size: 24px;
+            font-weight: 600;
+            margin: 0;
+        }
+        .shooting-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 30px;
+        }
+        .shooting-card {
+            background: linear-gradient(145deg, rgba(0, 204, 150, 0.1), rgba(0, 204, 150, 0.05));
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(0, 204, 150, 0.2);
+            transition: transform 0.2s;
+        }
+        .shooting-card:hover {
+            transform: translateY(-2px);
+        }
+        .shooting-label {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .shooting-value {
+            color: white;
+            font-size: 24px;
+            font-weight: 600;
+            margin: 0;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class="stat-grid">
+            <div class="stat-card">
+                <div class="stat-label">Points</div>
+                <div class="stat-value">{:.1f}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Rebounds</div>
+                <div class="stat-value">{:.1f}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Assists</div>
+                <div class="stat-value">{:.1f}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Minutes</div>
+                <div class="stat-value">{:.1f}</div>
+            </div>
+        </div>
+        """.format(
+            career_avg['PTS'],
+            career_avg['REB'],
+            career_avg['AST'],
+            career_avg['MIN']
+        ), unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class="shooting-grid">
+            <div class="shooting-card">
+                <div class="shooting-label">Field Goal %</div>
+                <div class="shooting-value">{:.1f}%</div>
+            </div>
+            <div class="shooting-card">
+                <div class="shooting-label">3-Point %</div>
+                <div class="shooting-value">{:.1f}%</div>
+            </div>
+            <div class="shooting-card">
+                <div class="shooting-label">Free Throw %</div>
+                <div class="shooting-value">{:.1f}%</div>
+            </div>
+        </div>
+        """.format(
+            career_avg['FG_PCT'],
+            career_avg['THREE_PCT'],
+            career_avg['FT_PCT']
+        ), unsafe_allow_html=True)
+
+    with tab6:
         st.subheader(f"Player Comparison - {st.session_state.selected_season}")
         
         col1, col2 = st.columns(2)
