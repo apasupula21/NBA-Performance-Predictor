@@ -1238,85 +1238,51 @@ if df is not None:
                             st.markdown("---")
                             
                             st.markdown("### Last Game vs Opponent")
-                            col1, col2, col3 = st.columns(3)
                             
+                            # Display game info
+                            st.markdown(f"**{h2h_stats['last_game_date']}** - {h2h_stats['last_game_type']}")
+                            st.markdown(f"**Matchup**: {h2h_stats['last_game_matchup']}")
+                            
+                            # Main stats
+                            col1, col2, col3 = st.columns(3)
                             with col1:
                                 if h2h_stats['last_game_pts'] is not None:
-                                    st.metric("Points", f"{h2h_stats['last_game_pts']:.1f}")
+                                    st.metric("Points", f"{h2h_stats['last_game_pts']:.0f}")
                             with col2:
                                 if h2h_stats['last_game_reb'] is not None:
-                                    st.metric("Rebounds", f"{h2h_stats['last_game_reb']:.1f}")
+                                    st.metric("Rebounds", f"{h2h_stats['last_game_reb']:.0f}")
                             with col3:
                                 if h2h_stats['last_game_ast'] is not None:
-                                    st.metric("Assists", f"{h2h_stats['last_game_ast']:.1f}")
+                                    st.metric("Assists", f"{h2h_stats['last_game_ast']:.0f}")
+                            
+                            # Shooting stats
+                            st.markdown("#### Shooting")
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                fg_pct = (h2h_stats['last_game_fgm'] / h2h_stats['last_game_fga'] * 100) if h2h_stats['last_game_fga'] > 0 else 0
+                                st.metric("FG%", f"{fg_pct:.1f}%", f"{h2h_stats['last_game_fgm']}/{h2h_stats['last_game_fga']}")
+                            with col2:
+                                fg3_pct = (h2h_stats['last_game_fg3m'] / h2h_stats['last_game_fg3a'] * 100) if h2h_stats['last_game_fg3a'] > 0 else 0
+                                st.metric("3P%", f"{fg3_pct:.1f}%", f"{h2h_stats['last_game_fg3m']}/{h2h_stats['last_game_fg3a']}")
+                            with col3:
+                                ft_pct = (h2h_stats['last_game_ftm'] / h2h_stats['last_game_fta'] * 100) if h2h_stats['last_game_fta'] > 0 else 0
+                                st.metric("FT%", f"{ft_pct:.1f}%", f"{h2h_stats['last_game_ftm']}/{h2h_stats['last_game_fta']}")
+                            with col4:
+                                st.metric("Minutes", f"{h2h_stats['last_game_min']:.0f}")
+                            
+                            # Additional stats
+                            st.markdown("#### Additional Stats")
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Steals", f"{h2h_stats['last_game_stl']:.0f}")
+                            with col2:
+                                st.metric("Blocks", f"{h2h_stats['last_game_blk']:.0f}")
+                            with col3:
+                                st.metric("Turnovers", f"{h2h_stats['last_game_tov']:.0f}")
+                            with col4:
+                                st.metric("Plus/Minus", f"{h2h_stats['last_game_plus_minus']:+.0f}")
                             
                             st.markdown("---")
-                            
-                            st.markdown("### Matchup Insights")
-                            
-                            team_stats = get_team_defensive_stats(opponent, season_data['SEASON'].iloc[0])
-                            if team_stats:
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    def_rtg = min(max(team_stats['def_rtg'], 100), 120) if team_stats['def_rtg'] is not None else 0
-                                    st.metric("Defensive Rating", f"{def_rtg:.1f}")
-                                    
-                                    pace = team_stats['pace'] if team_stats['pace'] is not None else 0
-                                    st.metric("Pace", f"{pace:.1f}")
-                                
-                                with col2:
-                                    efg_pct = min(max(team_stats['efg_pct'] * 100, 45), 60) if team_stats['efg_pct'] is not None else 0
-                                    st.metric("Opponent eFG%", f"{efg_pct:.1f}%")
-                                    
-                                    tov_pct = min(max(team_stats['tov_pct'] * 100, 10), 20) if team_stats['tov_pct'] is not None else 0
-                                    st.metric("Opponent TOV%", f"{tov_pct:.1f}%")
-                                
-                                with col3:
-                                    oreb_pct = min(max(team_stats['oreb_pct'] * 100, 20), 35) if team_stats['oreb_pct'] is not None else 0
-                                    st.metric("Opponent OREB%", f"{oreb_pct:.1f}%")
-                                    
-                                    ft_rate = min(max(team_stats['ft_rate'], 0.15), 0.35) if team_stats['ft_rate'] is not None else 0
-                                    st.metric("Opponent FT Rate", f"{ft_rate:.2f}")
-                                
-                                st.markdown("""
-                                <style>
-                                .metric-explanation {
-                                    background-color: #f0f2f6;
-                                    padding: 15px;
-                                    border-radius: 5px;
-                                    margin-top: 10px;
-                                    color: #262730;
-                                }
-                                .metric-explanation summary {
-                                    color: #262730;
-                                    font-weight: bold;
-                                    cursor: pointer;
-                                }
-                                .metric-explanation ul {
-                                    color: #262730;
-                                    margin-top: 10px;
-                                }
-                                .metric-explanation li {
-                                    margin-bottom: 5px;
-                                }
-                                </style>
-                                <div class="metric-explanation">
-                                    <details>
-                                        <summary>Understanding Defensive Metrics</summary>
-                                        <ul>
-                                            <li><b>Defensive Rating</b>: Points allowed per 100 possessions (lower is better, typically 100-120)</li>
-                                            <li><b>Pace</b>: Possessions per 48 minutes (higher means faster-paced games)</li>
-                                            <li><b>eFG%</b>: Effective field goal percentage allowed (accounts for 3-pointers being worth more, typically 45-60%)</li>
-                                            <li><b>TOV%</b>: Opponent turnover percentage (higher means better at forcing turnovers, typically 10-20%)</li>
-                                            <li><b>OREB%</b>: Opponent offensive rebound percentage (lower means better at defensive rebounding, typically 20-35%)</li>
-                                            <li><b>FT Rate</b>: Free throw attempts per field goal attempt (lower means better at avoiding fouls, typically 0.15-0.35)</li>
-                                        </ul>
-                                    </details>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.info("No defensive statistics available for this opponent.")
                         else:
                             st.info(f"No previous matchups found against {opponent} this season.")
             except Exception as e:

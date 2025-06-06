@@ -150,18 +150,35 @@ def get_all_game_logs(player_name, start_season='2010-11', end_season='2024-25')
     for season in seasons:
         try:
             print(f"Fetching game logs for {player_name} in {season}...")
-            gamelog = playergamelog.PlayerGameLog(
+            # Get regular season games
+            regular_season = playergamelog.PlayerGameLog(
                 player_id=player_id,
                 season=season,
                 season_type_all_star='Regular Season',
                 timeout=60
             )
             
-            df = gamelog.get_data_frames()[0]
-            if not df.empty and 'MATCHUP' in df.columns:
-                df['SEASON'] = season
-                all_logs.append(df)
-                print(f"Successfully fetched {len(df)} games for {season}")
+            df_regular = regular_season.get_data_frames()[0]
+            if not df_regular.empty and 'MATCHUP' in df_regular.columns:
+                df_regular['SEASON'] = season
+                df_regular['GAME_TYPE'] = 'Regular Season'
+                all_logs.append(df_regular)
+                print(f"Successfully fetched {len(df_regular)} regular season games for {season}")
+            
+            # Get playoff games
+            playoffs = playergamelog.PlayerGameLog(
+                player_id=player_id,
+                season=season,
+                season_type_all_star='Playoffs',
+                timeout=60
+            )
+            
+            df_playoffs = playoffs.get_data_frames()[0]
+            if not df_playoffs.empty and 'MATCHUP' in df_playoffs.columns:
+                df_playoffs['SEASON'] = season
+                df_playoffs['GAME_TYPE'] = 'Playoffs'
+                all_logs.append(df_playoffs)
+                print(f"Successfully fetched {len(df_playoffs)} playoff games for {season}")
             
             time.sleep(1)
             
@@ -324,10 +341,11 @@ def build_availability_table(target_player, teammates, season='2023-24'):
     availability = {teammate: get_player_game_dates(teammate, season) for teammate in teammates}
     return target_dates, availability
 
-def get_head_to_head_stats(player_name, opponent_team, season='2024-25', max_retries=3):
-    cache_key = f"{player_name}_{opponent_team}_{season}"
+def get_head_to_head_stats(player_name, opponent_team, season=None, max_retries=3):
+    cache_key = f"{player_name}_{opponent_team}_all_time"
     cache_file = f'head_to_head_cache_{cache_key}.pkl'
     
+    # Check cache first
     if os.path.exists(cache_file):
         try:
             with open(cache_file, 'rb') as f:
@@ -340,7 +358,8 @@ def get_head_to_head_stats(player_name, opponent_team, season='2024-25', max_ret
         if not player_id:
             return None
             
-        all_logs = get_all_game_logs(player_name, season, season)
+        # Get all historical game logs instead of just current season
+        all_logs = get_all_game_logs(player_name, '2010-11', '2024-25')
         if all_logs.empty:
             return None
             
@@ -363,19 +382,45 @@ def get_head_to_head_stats(player_name, opponent_team, season='2024-25', max_ret
         
         opponent_abbrev = full_to_abbrev.get(opponent_name, opponent_name)
         
+        # Ensure GAME_DATE is datetime
+        all_logs['GAME_DATE'] = pd.to_datetime(all_logs['GAME_DATE'])
+        
+        # Sort by date in descending order to get most recent games first
+        all_logs = all_logs.sort_values('GAME_DATE', ascending=False)
+        
         h2h_games = all_logs[all_logs['MATCHUP'].str.contains(opponent_abbrev, case=False)]
         if h2h_games.empty:
             return None
             
+        # Get the most recent game (first row since we sorted in descending order)
+        last_game = h2h_games.iloc[0]
+        
+        # Format the date in a more readable format
+        game_date = last_game['GAME_DATE'].strftime('%B %d, %Y')
+        
         stats = {
             'games_played': len(h2h_games),
             'avg_pts': h2h_games['PTS'].mean(),
             'avg_reb': h2h_games['REB'].mean(),
             'avg_ast': h2h_games['AST'].mean(),
             'avg_fg_pct': h2h_games['FG_PCT'].mean() if 'FG_PCT' in h2h_games.columns else None,
-            'last_game_pts': h2h_games['PTS'].iloc[-1] if not h2h_games.empty else None,
-            'last_game_reb': h2h_games['REB'].iloc[-1] if not h2h_games.empty else None,
-            'last_game_ast': h2h_games['AST'].iloc[-1] if not h2h_games.empty else None
+            'last_game_pts': last_game['PTS'],
+            'last_game_reb': last_game['REB'],
+            'last_game_ast': last_game['AST'],
+            'last_game_date': game_date,
+            'last_game_type': last_game.get('GAME_TYPE', 'Unknown'),
+            'last_game_min': last_game.get('MIN', 0),
+            'last_game_fgm': last_game.get('FGM', 0),
+            'last_game_fga': last_game.get('FGA', 0),
+            'last_game_fg3m': last_game.get('FG3M', 0),
+            'last_game_fg3a': last_game.get('FG3A', 0),
+            'last_game_ftm': last_game.get('FTM', 0),
+            'last_game_fta': last_game.get('FTA', 0),
+            'last_game_stl': last_game.get('STL', 0),
+            'last_game_blk': last_game.get('BLK', 0),
+            'last_game_tov': last_game.get('TOV', 0),
+            'last_game_plus_minus': last_game.get('PLUS_MINUS', 0),
+            'last_game_matchup': last_game['MATCHUP']
         }
         
         try:
@@ -433,30 +478,29 @@ def get_team_defensive_stats(team_name, season='2024-25'):
 
 def fetch_schedule(cache_duration_hours=24):
     cache_file = 'schedule_cache.pkl'
-    current_date = datetime.now()  # Define current_date at the very beginning
+    current_date = datetime.now()
     
     if os.path.exists(cache_file):
-        try:
-            cache_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
-            if current_date - cache_time < timedelta(hours=cache_duration_hours):
+        cache_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+        if datetime.now() - cache_time < timedelta(hours=cache_duration_hours):
+            try:
                 with open(cache_file, 'rb') as f:
                     return pickle.load(f)
-        except Exception as e:
-            print(f"Error loading schedule cache: {e}")
+            except Exception as e:
+                print(f"Error loading cached schedule: {e}")
     
-    print("Fetching new schedule...")
+    schedule = []
+    
     try:
-        schedule = []
-        
-        # Try playoff schedule first if in playoff months
-        if current_date.month in [4, 5, 6]:
-            print("NBA Playoffs in progress - checking playoff schedule")
+        # First try playoffs
+        print("NBA Playoffs in progress - checking playoff schedule")
+        for i in range(7):  # Look ahead 7 days
+            target_date = current_date + timedelta(days=i)
             try:
                 scoreboard = scoreboardv2.ScoreboardV2(
-                    game_date=current_date.strftime('%m/%d/%Y'),
+                    game_date=target_date.strftime('%m/%d/%Y'),
                     league_id='00',
-                    day_offset=0,
-                    season_type='Playoffs'
+                    day_offset=0
                 )
                 
                 games = scoreboard.get_data_frames()[0]
@@ -467,7 +511,7 @@ def fetch_schedule(cache_duration_hours=24):
                             away_team = teams.find_team_name_by_id(game['VISITOR_TEAM_ID'])
                             
                             if home_team and away_team:
-                                game_date = pd.to_datetime(game['GAME_DATE'])
+                                game_date = pd.to_datetime(game['GAME_DATE_EST'])  # Changed from GAME_DATE to GAME_DATE_EST
                                 schedule.append({
                                     'game_date': game_date,
                                     'home_team_id': game['HOME_TEAM_ID'],
@@ -480,6 +524,7 @@ def fetch_schedule(cache_duration_hours=24):
                             continue
             except Exception as e:
                 print(f"Error fetching playoff schedule: {e}")
+                continue
         
         if not schedule:
             print("Checking regular season schedule")
@@ -500,7 +545,7 @@ def fetch_schedule(cache_duration_hours=24):
                                 away_team = teams.find_team_name_by_id(game['VISITOR_TEAM_ID'])
                                 
                                 if home_team and away_team:
-                                    game_date = pd.to_datetime(game['GAME_DATE'])
+                                    game_date = pd.to_datetime(game['GAME_DATE_EST'])  # Changed from GAME_DATE to GAME_DATE_EST
                                     schedule.append({
                                         'game_date': game_date,
                                         'home_team_id': game['HOME_TEAM_ID'],
@@ -533,6 +578,7 @@ def fetch_schedule(cache_duration_hours=24):
             print(f"Error caching schedule: {e}")
         
         return schedule
+        
     except Exception as e:
         print(f"Error fetching schedule: {e}")
         return []
